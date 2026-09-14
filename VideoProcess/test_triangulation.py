@@ -1,5 +1,5 @@
-import utils
-from post_process import observed_points_per_frame
+from . import utils
+from .post_process import observed_points_per_frame
 
 import numpy as np
 import scipy

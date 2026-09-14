@@ -1,0 +1,21 @@
+# DATASET CONV
+python -m VideoProcess.datasets --count=5 --type=0 --labels=".\Data\synth_01\dataset\train\labels.json"
+
+---
+
+# TRAIN CONV
+python -m VideoProcess.train_conv --labels=./Data/synth_01/dataset/train/labels.json --lr=0.001 --out=./ckpts/0002 --batch-size=1024 --num-workers=4
+
+# TRAIN EDGE
+python -m VideoProcess.train_edge --labels=./Data/synth_01/dataset/train/labels.json --lr=0.001 --out=./ckpts/0002 --batch-size=1024 --num-workers=8
+
+# TRAIN BLOCK
+python -m VideoProcess.train_block --labels=./Data/synth_01/dataset/train/labels.json --lr=0.001 --out=./ckpts/0002 --batch-size=512 --num-workers=8
+
+---
+
+# TEST CONV
+python -m VideoProcess.test_conv --edge-model=./ckpts/0002/edge/best_lr_0.001_bs_1024_model_20_accuracy=0.9836.pt --corner-model=./ckpts/0002/conv/best_lr_0.001_bs_256_model_21_acc=0.7893.pt --input=./Blender/renders/ --marker-confidence-thr=7.5 --edge-confidence-thr=7.0 --marker-distance-thr=65 --out-dir=./Out/conv/vids_02/000/ --out-file=./Data/synth_01/label_files.json --start-frame=10 --end-frame=20
+
+# TEST BLOCK
+python -m VideoProcess.test_block --block-model=./ckpts/0002/block/lr_0.0001_bs_64_checkpoint_157.pt --confidence-distance-thr=0.5 --input=./Blender/renders/cam_06.mp4 --marker-file=./Out/synth_01/conv/markers.json --labels=./Data/synth_01/dataset/train/labels.json --out-file=./Out/synth_01/block/blocks.json --out-video=./Out/synth_01/block/blocks.mp4 --start-frame=0 --end-frame=4 

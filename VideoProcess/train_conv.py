@@ -7,36 +7,57 @@ from ignite.metrics import Accuracy, Loss, MeanAbsoluteError
 from ignite.handlers import ModelCheckpoint, Checkpoint
 from ignite.contrib.handlers import TensorboardLogger, global_step_from_engine
 
-from torcheval.metrics.functional import binary_f1_score
+from torcheval.metrics.functional import binary_f1_score, binary_recall
 
-from models import UNet
-from datasets import MarkerDataset
+from .models import UNet
+from .datasets import MarkerDataset
 
 import numpy as np
 import os
 import matplotlib.pyplot as plt
 
+import argparse
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
+
+    # args
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--labels', default=None, type=str, required=True, help='Path to the labels.json file containing "image" fields and annotated data')
+    parser.add_argument('--out', default='./ckpts/0001/', type=str)
+    parser.add_argument('--lr', default=0.001, type=float, required=True)
+    parser.add_argument('--batch-size', default=1024, type=int, required=True)
+    parser.add_argument('--block-size', default=96, type=int)
+    parser.add_argument('--margin', default=50, type=int)
+    parser.add_argument('--augment', default=True, type=bool)
+    parser.add_argument('--max-epochs', default=400, type=int)
+    parser.add_argument('--max-num-markers', default=100, type=int)
+    parser.add_argument('--num-workers', default=4, type=int)
+    parser.add_argument('--checkpoint', default=None, type=str)
+    parser.add_argument('--debug', default=False, type=bool)
+
+    args = parser.parse_args()
+
     model = UNet(output_channel=2).to(device)
-    
-    dataset_folder, dataset_file = os.path.join(''), 'dataset/all_in_one_data.json'
+
+    args.dataset_folder, args.labels = os.path.split(args.labels)
 
     train_loader = DataLoader(
-        MarkerDataset(dataset_folder, dataset_file, size=128*500, train=True, max_num_markers=100, 
-                      output_mask_image=True, output_line_mask_image=True, augment_image=True), 
-        batch_size=1024, shuffle=True, num_workers=4, persistent_workers=True
+        MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=128*500, train=True, max_num_markers=args.max_num_markers, 
+                      output_mask_image=True, output_line_mask_image=True, augment_image=args.augment), 
+        batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0
     )
 
     val_loader = DataLoader(
-        MarkerDataset(dataset_folder, dataset_file, size=1280, train=False, max_num_markers=100, 
+        MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=1280, train=False, max_num_markers=args.max_num_markers, 
                       output_mask_image=True, output_line_mask_image=True, augment_image=False), 
-        batch_size=1024, shuffle=False, num_workers=4, persistent_workers=True
+        batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, persistent_workers=args.num_workers > 0
     )
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+    # Test model with 0.74% acc trained with eps 1e-7
+    # , weight_decay=0.01
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     
     def loss_func(input: torch.Tensor, target: torch.Tensor):
         heatmap_loss = nn.functional.mse_loss(input, target*10)
@@ -49,9 +70,16 @@ if __name__ == "__main__":
         targ = target > 0.5
         f1 = binary_f1_score(pred.view(-1), targ.view(-1))        
         return f1
+
+    def recall_func(input: torch.Tensor, target: torch.Tensor):
+        pred = input > 5
+        targ = target > 0.5
+        
+        return binary_recall(pred.view(-1), targ.view(-1))
     
     val_metrics = {
         "accuracy": Loss(accuracy_func),
+        "recall": Loss(recall_func),
         "loss": Loss(loss_func)
     }
 
@@ -69,7 +97,7 @@ if __name__ == "__main__":
     def log_validation_results(trainer):
         val_evaluator.run(val_loader)
         metrics = val_evaluator.state.metrics
-        print(f"Validation Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f}")
+        print(f"Validation Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f} Avg recall: {metrics['recall']:.2f}")
         
         tb_logger.writer.flush()
 
@@ -79,17 +107,17 @@ if __name__ == "__main__":
 
 
     model_checkpoint = ModelCheckpoint(
-        "ckpts/0515/conv",
+        os.path.join(args.out,'conv'),
         n_saved=1,
-        # filename_prefix="best",
+        filename_prefix=f'lr_{args.lr}_bs_{args.batch_size}',
         global_step_transform=global_step_from_engine(trainer),
         require_empty=False
     )
 
     best_checkpoint = ModelCheckpoint(
-        "ckpts/0515/conv",
+        os.path.join(args.out,'conv'),
         n_saved=3,
-        filename_prefix="best",
+        filename_prefix=f'best_lr_{args.lr}_bs_{args.batch_size}',
         score_function=score_function,
         score_name="acc",
         global_step_transform=global_step_from_engine(trainer),
@@ -121,15 +149,15 @@ if __name__ == "__main__":
         )
         
     # resume
-    # if True:
-    #     checkpoint_fp = os.path.join('checkpoint-conv', "checkpoint_100.pt")
-    #     checkpoint = torch.load(checkpoint_fp, map_location=device) 
-    #     Checkpoint.load_objects(to_load={
-    #         'model': model, 
-    #         'optimizer': optimizer, 
-    #         'trainer': trainer
-    #         }, checkpoint=checkpoint) 
+    if not args.checkpoint is None:
+        checkpoint_fp = args.checkpoint
+        checkpoint = torch.load(checkpoint_fp, map_location=device) 
+        Checkpoint.load_objects(to_load={
+            'model': model, 
+            'optimizer': optimizer, 
+            'trainer': trainer
+            }, checkpoint=checkpoint) 
 
-    trainer.run(train_loader, max_epochs=400)
+    trainer.run(train_loader, max_epochs=args.max_epochs)
 
     tb_logger.close()

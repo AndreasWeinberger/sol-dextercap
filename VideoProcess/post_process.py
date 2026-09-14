@@ -1,7 +1,7 @@
 import numpy as np
 import json
 import matplotlib.pyplot as plt
-from utils import load_label_patches
+from .utils import load_label_patches
 
 def get_point_idx(patches_file, pts_file):
     marker_defs, block_defs, patches = load_label_patches(patches_file)

@@ -1,6 +1,6 @@
 import scipy.sparse
 import scipy.spatial
-import utils
+from . import utils
 
 import skimage
 import imageio.v3 as iio

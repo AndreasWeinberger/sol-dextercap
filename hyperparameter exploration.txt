@@ -1,0 +1,14 @@
+CONV
+- batch-size=1024
+	- crash: out of memory
+- batch-size=128-512
+	- pretty good
+	- the more complex the data, the better it is with a higher batch size I think
+
+
+EDGE
+- batch-size should be low: 8-64 seems good
+
+
+BLOCK
+- batch-size should be low: 8-64 seems good
