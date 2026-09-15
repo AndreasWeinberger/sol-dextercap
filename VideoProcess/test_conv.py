@@ -126,7 +126,7 @@ def infer_image(model: nn.Module, img: np.array, confidence_thr: float = 0.6,
 @torch.no_grad()
 def refine_checkpoints(edge_model: nn.Module, frame: np.array, markers: np.ndarray, marker_confidence: np.ndarray,
                        edge_confidence_thr: float = 0.6, marker_distance_thr: int = 65, k_nearest: int = 8,
-                       device: str | torch.device = 'cuda'):
+                       device: str | torch.device = 'cuda', debug:bool=False):
 
     if len(markers) == 0:
         return markers, []
@@ -145,7 +145,8 @@ def refine_checkpoints(edge_model: nn.Module, frame: np.array, markers: np.ndarr
         markers_in_range[idx_1].add(idx_0)
     markers_in_range = [list(indices) for indices in markers_in_range]
 
-    print(f'> Close Markers: {len(close_markers)}')
+    if debug:
+        print(f'> Close Markers: {len(close_markers)}')
 
     # prepare images for inference
     edge_imgs = []
@@ -167,7 +168,8 @@ def refine_checkpoints(edge_model: nn.Module, frame: np.array, markers: np.ndarr
     if len(edge_pts) == 0:
         return np.zeros((0, 2)), []
 
-    print(f'> Edge Pts: {len(edge_pts)}')
+    if debug:
+        print(f'> Edge Pts: {len(edge_pts)}')
 
     edge_imgs = torch.from_numpy(np.stack(edge_imgs, axis=0)).to(device)
     edge_pred = edge_model(edge_imgs).sigmoid().cpu().numpy().flatten()
@@ -231,7 +233,8 @@ def refine_checkpoints(edge_model: nn.Module, frame: np.array, markers: np.ndarr
 
             block_candidates.append((hull_area, corner_idx))
 
-    print(f'> Block Candidates: {len(block_candidates)}')
+    if debug:
+        print(f'> Block Candidates: {len(block_candidates)}')
 
     # now consolidate markers
     checked_marker_indices = list(set(sum((idx for _, idx in block_candidates), [])))
@@ -242,9 +245,9 @@ def refine_checkpoints(edge_model: nn.Module, frame: np.array, markers: np.ndarr
     checked_markers = markers[checked_marker_indices]
     block_candidates = [(area, tuple(index_mapping[i] for i in block_indices)) for area, block_indices in block_candidates if len(block_indices) > 0]
 
-    print(f'> Checked Markers: {len(checked_markers)}')
-
-    print(f'> Done Refining\n')
+    if debug:
+        print(f'> Checked Markers: {len(checked_markers)}')
+        print(f'> Done Refining\n')
 
     return checked_markers, block_candidates
 
@@ -260,9 +263,6 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
         output = f'{out_folder}\\{out_split[0]}'
     elif in_split[0] != '':
         output = f'{out_folder}\\{in_split[0]}'
-
-    # Start
-    t_start = time.time()
 
     def process_frame(idx: int, frame: np.ndarray, output: str, all_markers, ffmpeg_process):
         # Start processing...
@@ -305,7 +305,7 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
             if ffmpeg_process is None:
                 import ffmpeg
                 ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}').output(
-                    output, pix_fmt='yuv420p').overwrite_output().run_async(pipe_stdin=True))
+                    output, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
             ffmpeg_process.stdin.write(out_img)
             # cv2.imwrite(os.path.join(out_dir, f'{prefix}{utils.leading_zeros(idx,leading_zeros)}.jpg'), out_img)
 
@@ -322,11 +322,11 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
             t_finish_start = time.time()
             ffmpeg_process.stdin.close()
             ffmpeg_process.wait()
-            print(f'\n> Video saved to "{output}_markers.mp4" in {(time.time() - t_finish_start):.2f}s')
+            print(f'> Video saved to "{output}_markers.mp4" in {(time.time() - t_finish_start):.2f}s')
             print('---')
 
         if len(all_markers) == 0:
-            print(f'\n> No markers to save!\n')
+            print(f'> No markers to save!\n')
             print('---')
             return
             
@@ -334,13 +334,17 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
         t_finish_start = time.time()
         import json
         with open(f'{output}_markers.json', 'w') as f:
-            json.dump(all_markers, f, indent=4)
-            all = 0
-            for frame in all_markers:
-                all += len(frame['markers']) 
-            avg = all / len(all_markers)
-            print(f'\n> Saved {all} markers (Average: {avg:.2f}) to "{output}_markers.json" in {(time.time() - t_finish_start):.2f}s\n')
+            json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+            open(f'{output}_markers.json', "w+", 1).write(json_string)
+            
+            all = sum([len(frame['markers']) for frame in all_markers])
+            
+            avg = int(all / len(all_markers))
+            print(f'> Saved markers to "{output}_markers.json"\n\n\tTotal: {all}\n\tAverage: {avg}\n\tTime: {(time.time() - t_finish_start):.2f}s\n')
             print('---')
+
+    # Start
+    t_start_global = time.time()
 
     if os.path.isfile(input) and in_split[1] == 'mp4':
         all_markers = []
@@ -382,6 +386,9 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
 
             output += f'\\{os.path.basename(subfolder)}'
 
+            # Start
+            t_start = time.time()
+
             for id_img, fn in enumerate(images, start_frame):
                 if end_frame > -1 and id_img > end_frame:
                     break
@@ -397,7 +404,7 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
 
             finish(output, ffmpeg_process, all_markers)
 
-    print(f'> Processing markers complete - Total time: {(time.time() - t_start):.2f}s')
+    print(f'> Processing markers complete\n\tTotal time: {(time.time() - t_start_global):.2f}s')
     print('---')
 
 class CornerLabeler:

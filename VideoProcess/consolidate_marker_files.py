@@ -5,7 +5,7 @@ import argparse
 def folder_contents(base_dir: str, recursive: bool = False, files_filter_lambda=None, dirs_filter_lambda=None):
     """
     Returns directories and files that lie under @base_dir
-    
+
     - Provide lambda for file and directory filtering (e.g.: lambda x: x.endswith('.json'))
     - Optionally search recursively
     """
@@ -35,20 +35,33 @@ def folder_contents(base_dir: str, recursive: bool = False, files_filter_lambda=
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--folder', default='', type=str, required=True)
+    parser.add_argument('--input', default='', type=str, required=True)
+    parser.add_argument('--output', default='', type=str, required=True)
     parser.add_argument('--recursive', default=True, type=bool)
     args = parser.parse_args()
 
-    args.folder = os.path.join('', args.folder)
+    args.input = os.path.join('', args.input)
+    args.output = os.path.join('', args.output)
 
-    if os.path.isdir(args.folder):
-        dirs, files = folder_contents(os.path.abspath(args.folder), True, lambda x: x.endswith('.json'))
+    if os.path.isdir(args.input):
+        dirs, files = folder_contents(os.path.abspath(args.input), True, lambda x: x.endswith('_markers.json'))
+        all = {}
         for fn in files:
             with open(fn) as f:
                 import json
                 ob = json.load(f)
-                for frame in ob:
-                    print(len(frame['markers']))
+                field = os.path.basename(fn)
+                field = field.split('_markers')[0]
+                all[field] = ob
+                total_markers = [len(o['markers']) for o in ob]
+            print(f'> Added markers from "{field}"\n\tFrames: {len(total_markers)}\n\tTotal markers: {sum(total_markers)}\n\tAverage: {int(sum(total_markers) / len(total_markers))}')
+
+        if len(all) > 0:
+            json_string = json.dumps(all, separators=(',', ":"))  # Compact JSON structure
+            open(args.output, "w+", 1).write(json_string)
+        print('---')
+        print(f'> Consolidated {len(all)} marker files to "{args.output}"')
+        print('---')
 
 
 if __name__ == '__main__':

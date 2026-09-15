@@ -218,8 +218,7 @@ def draw_block_corners(image: np.ndarray, markers: np.ndarray, blocks: np.ndarra
 def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_file, label_confidence_thr: float = 0.5, start_frame: int = 0, end_frame: int = -1):
     with open(marker_file) as f:
         import json
-        all_markers = json.load(f)
-
+        consolidated_markers = json.load(f)
     in_folder, in_file = os.path.split(input)
     out_folder, out_file = os.path.split(output)
 
@@ -231,15 +230,8 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
     elif in_split[0] != '':
         output = f'{out_folder}\\{in_split[0]}'
 
-    all_marker_pos = np.concatenate([frame['checked_markers'] for frame in all_markers if len(frame['checked_markers']) > 0], axis=0)
-    roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 10)
-    roi_max = np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int) + 10
-
-    # Start
-    t_start = time.time()
-
     def process_frame(idx: int, frame: np.ndarray, output:str, all_markers, ffmpeg_process):
-
+    
         # Start processing...
         t_process_start = time.time()
 
@@ -261,7 +253,7 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
             #    print(f'\tLabel: {label} - conf: {label_confidence}')
 
             block_labels.append({'label': label, 'label_confidence': float(label_confidence),
-                                 'direction': int(direction), 'dir_confidence': float(dir_confidence)})
+                                    'direction': int(direction), 'dir_confidence': float(dir_confidence)})
         all_markers[idx]['block_labels'] = block_labels
 
         if output != '':
@@ -297,7 +289,7 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
             if ffmpeg_process is None:
                 import ffmpeg
                 ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}').output(
-                    output, pix_fmt='yuv420p').overwrite_output().run_async(pipe_stdin=True))
+                    output, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
             ffmpeg_process.stdin.write(out_img)
             # cv2.imwrite(os.path.join(out_dir, f'{prefix}{utils.leading_zeros(idx,leading_zeros)}.jpg'), out_img)
 
@@ -308,17 +300,17 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
         print('---')
 
         return all_markers, ffmpeg_process
-
+    
     def finish(output, ffmpeg_process, all_markers):
         if ffmpeg_process is not None:
             t_finish_start = time.time()
             ffmpeg_process.stdin.close()
             ffmpeg_process.wait()
-            print(f'\n> Video saved to "{output}_block_labels.mp4" in {(time.time() - t_finish_start):.2f}s')
+            print(f'> Video saved to "{output}_block_labels.mp4" in {(time.time() - t_finish_start):.2f}s')
             print('---')
 
         if len(all_markers) == 0:
-            print(f'\n> No block labels to save!\n')
+            print(f'> No block labels to save!\n')
             print('---')
             return
             
@@ -326,16 +318,19 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
         t_finish_start = time.time()
         import json
         with open(f'{output}_block_labels.json', 'w') as f:
-            json.dump(all_markers, f, indent=4)
-            all = 0
-            for frame in all_markers:
-                all += len(frame['block_labels'])
-            avg = all / len(all_markers)
-            print(f'\n> Saved {all} block labels (Average: {avg:.2f}) to "{output}_block_labels.json" in {(time.time() - t_finish_start):.2f}s\n')
+            json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+            open(f'{output}_block_labels.json', "w+", 1).write(json_string)
+            
+            all = sum([len(frame['blocks']) for frame in all_markers])
+            avg = int(all / len(all_markers))
+            print(f'> Saved block labels to "{output}_block_labels.json"\n\n\tTotal: {all}\n\tAverage: {avg}\n\tTime: {(time.time() - t_finish_start):.2f}s\n')
             print('---')
+        
+
+    # Start
+    t_start_global = time.time()
 
     if os.path.isfile(input) and in_split[1] == 'mp4':
-        all_markers = []
         ffmpeg_process = None
         count = 0
 
@@ -356,26 +351,33 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
         else:
             subfolders = in_folder
 
-        base_output = output
+        base = output
 
         for idx_folder, subfolder in enumerate(subfolders):
+            all_markers = consolidated_markers[os.path.basename(subfolder)]
+            all_marker_pos = np.concatenate([frame['checked_markers'] for frame in all_markers if len(frame['checked_markers']) > 0], axis=0)
+            roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 10)
+            roi_max = np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int) + 10
+            
             images = [os.path.join(subfolder, frame) for frame in os.listdir(subfolder)]
             if len(images) > 0:
                 sorted(images, key=lambda fn: os.path.basename(fn))
 
-            all_markers = []
             ffmpeg_process = None
             count = 0
 
-            output = os.path.join(base_output, os.path.basename(subfolder))
+            output = os.path.join(base, os.path.basename(subfolder))
 
             if not os.path.isdir(output):
                 os.makedirs(output, exist_ok=True)
 
             output += f'\\{os.path.basename(subfolder)}'
 
+            # Start
+            t_start = time.time()
+
             for id_img, fn in enumerate(images, start_frame):
-                if end_frame > -1 and id_img > end_frame:
+                if (end_frame > -1 and id_img > end_frame) or id_img >= len(all_markers):
                     break
 
                 if not os.path.isfile(fn):
@@ -389,7 +391,7 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
 
             finish(output, ffmpeg_process, all_markers)
 
-    print(f'> Processing block labels complete - Total time: {(time.time() - t_start):.2f}s')
+    print(f'> Processing block labels complete\n\n\tTotal time: {(time.time() - t_start_global):.2f}s')
     print('---')
 
 if __name__ == '__main__':
@@ -397,7 +399,7 @@ if __name__ == '__main__':
     parser.add_argument('--block-model', default='', type=str, required=True)
 
     parser.add_argument('--input', default='', type=str, required=True, help="Input video/images")
-    parser.add_argument('--marker-file', default='', type=str, required=True, help="Marker .json file from conv and edge models")
+    parser.add_argument('--consolidated-markers', default='', type=str, required=True, help="Marker .json file from conv and edge models")
     parser.add_argument('--labels', default='', type=str, required=True, help="Dataset .json file with annotated data and image fields")
     parser.add_argument('--output', default='', type=str, required=True, help="Output file in .json format")
 
@@ -434,4 +436,4 @@ if __name__ == '__main__':
     print(f'> End Frame: {args.end_frame}')
     print(f'---')
 
-    infer_block_labels(block_model, args.input, args.output, args.marker_file, args.label_confidence_thr, args.start_frame, args.end_frame)
+    infer_block_labels(block_model, args.input, args.output, args.consolidated_markers, args.label_confidence_thr, args.start_frame, args.end_frame)
