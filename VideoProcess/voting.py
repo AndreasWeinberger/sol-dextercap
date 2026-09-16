@@ -2,6 +2,8 @@ import json
 import numpy as np
 import time
 import multiprocessing
+import argparse
+import os
 
 
 def load_patches(patch_path):
@@ -225,19 +227,30 @@ def modify_block_labels(block_path, patch_path):
     return new_block_json
 
 
-def process_camera(camera: int, patch_path: str):
-    block_path = f"dataset/mocap0428/result/{camera}_r_block.json"
+def process_camera(folder: int, patch_path: str):
+    block_path = f"{folder}_block_labels.json"
     new_block_json = modify_block_labels(block_path, patch_path)
-    with open(f"dataset/mocap0428/result/{camera}_voted.json", 'w') as f:
-        json.dump(new_block_json, f, indent=4)
+    
+    json_string = json.dumps(new_block_json, separators=(',', ":"))  # Compact JSON structure
+    open(f'{folder}_voted.json', "w+", 1).write(json_string)
 
 
 def main():
-    patch_path = "dataset/mocap0428/patches_0428.json"
-    camera_list = [1,2,3,4,5,6,7,8,9,10,11,13,14]
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', default='', type=str, required=True, help="Folder with subfolders per camera")
+    parser.add_argument('--output', default='', type=str, required=True, help="Output _voted.json file")
+    args = parser.parse_args()
 
-    with multiprocessing.Pool(processes=len(camera_list)) as pool:
-        pool.starmap(process_camera, [(camera, patch_path) for camera in camera_list])
+    args.input = os.path.join('', args.input)
+    args.output = os.path.join('', args.output)
+
+    # ???
+    patch_path = "dataset/mocap0428/patches_0428.json"
+    subfolders = os.listdir(args.input)
+    subfolders = [os.path.join(args.input,f) for f in subfolders]
+
+    with multiprocessing.Pool(processes=len(subfolders)) as pool:
+        pool.starmap(process_camera, [(folder, patch_path) for folder in subfolders])
 
 
 if __name__ == "__main__":
