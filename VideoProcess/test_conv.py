@@ -10,6 +10,8 @@ from . import utils
 from .models import UNet, EdgeNet
 from .datasets import EdgeDataset
 
+import multiprocessing
+
 import cv2
 
 import os

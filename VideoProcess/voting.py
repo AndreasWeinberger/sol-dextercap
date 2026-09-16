@@ -13,12 +13,11 @@ def load_patches(patch_path):
     inversed_patches = {}  # key: label, value: patch_name
 
     for name, p in patch_json.items():
-        new_p = [[p[i][j:j+2] for j in range(0, len(p[i]), 2)] for i in range(len(p))]
-        patches[name] = new_p
-        for i in new_p:
-            for j in i:
-                if j != "**":
-                    inversed_patches[j] = name
+        #new_p = [[p[i][j:j+2] for j in range(0, len(p[i]), 2)] for i in range(len(p))]
+        patches[name] = p
+        for i in p:
+            if i['label'] != "**":
+                inversed_patches[i['label']] = name
 
     return patches, inversed_patches
 
@@ -104,7 +103,7 @@ def dfs_vote(blk_idx, curr_direction, blocks, edge2blocks, patch,
 
 
 
-def voting(frame, patches, inversed_patches):
+def process_frame(frame, patches, inversed_patches):
     new_frame = {}
 
     for k, v in frame.items():
@@ -195,8 +194,19 @@ def voting(frame, patches, inversed_patches):
 
 def modify_block_labels(block_path, patch_path):
     print(f"processing block labels... {block_path}")
-    camera_id = block_path.split("/")[-1].split("_")[0]
-    patches, inversed_patches = load_patches(patch_path)
+    camera_id = os.path.basename(block_path).split("_block_labels.json")[0].split('_')[1]
+
+    patches, inversed_patches = {}, {}
+
+    if not os.path.basename(patch_path).endswith('.json'):
+        patches_files = [os.path.join(patch_path,p) for p in os.listdir(patch_path)]
+        for p in patches_files:
+            p, i = load_patches(p)
+            patches = {**patches, **p} # merges two dicts
+            inversed_patches = {**inversed_patches, **i}
+    else:
+        patches, inversed_patches = load_patches(patch_path)
+        
     with open(block_path, 'r') as f:
         block_json = json.load(f)
     new_block_json = []
@@ -218,7 +228,7 @@ def modify_block_labels(block_path, patch_path):
             changed_num_total = 0
 
 
-        new_frame, deleted_num, changed_num = voting(frame, patches, inversed_patches)
+        new_frame, deleted_num, changed_num = process_frame(frame, patches, inversed_patches)
 
         new_block_json.append(new_frame)
         deleted_num_total += deleted_num
@@ -227,30 +237,45 @@ def modify_block_labels(block_path, patch_path):
     return new_block_json
 
 
-def process_camera(folder: int, patch_path: str):
-    block_path = f"{folder}_block_labels.json"
-    new_block_json = modify_block_labels(block_path, patch_path)
+def voting(input:str,output:str, patch_path:str, refined:bool = True):
+    in_folder, in_file = os.path.split(input)
+    out_folder, out_file = os.path.split(output)
+
+    in_split = in_file.split('.')
+    out_split = out_file.split('.')
+
+    if out_split[0] != '':
+        output = f'{out_folder}\\{out_split[0]}'
+    elif in_split[0] != '':
+        output = f'{out_folder}\\{in_split[0]}'
+        
+    subfolders = os.listdir(input)
+    subfolders = [os.path.join(input,f) for f in subfolders]
     
-    json_string = json.dumps(new_block_json, separators=(',', ":"))  # Compact JSON structure
-    open(f'{folder}_voted.json', "w+", 1).write(json_string)
+    for folder in subfolders:
+        block_path = f"{folder}\\{os.path.basename(folder)}_block_labels.json"
+        new_block_json = modify_block_labels(block_path, patch_path)
+
+        json_string = json.dumps(new_block_json, separators=(',', ":"))  # Compact JSON structure
+        open(f'{folder}_voted.json', "w+", 1).write(json_string)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', default='', type=str, required=True, help="Folder with subfolders per camera")
     parser.add_argument('--output', default='', type=str, required=True, help="Output _voted.json file")
+    parser.add_argument('--patches', default='', type=str, required=True, help="Folder or single file containing patches with row / col information")
+    parser.add_argument('--refined', default=True, type=bool, help='Whether to use refined markers files. Look for "_refined_markers.json" instead of "_markers.json"')
     args = parser.parse_args()
 
     args.input = os.path.join('', args.input)
     args.output = os.path.join('', args.output)
+    args.patches = os.path.join('', args.patches)
 
-    # ???
-    patch_path = "dataset/mocap0428/patches_0428.json"
-    subfolders = os.listdir(args.input)
-    subfolders = [os.path.join(args.input,f) for f in subfolders]
+    voting(args.input,args.output, args.patches, args.refined)
 
-    with multiprocessing.Pool(processes=len(subfolders)) as pool:
-        pool.starmap(process_camera, [(folder, patch_path) for folder in subfolders])
+    # with multiprocessing.Pool(processes=len(subfolders)) as pool:
+    #     pool.starmap(process_camera, [(folder, args.patches) for folder in subfolders])
 
 
 if __name__ == "__main__":

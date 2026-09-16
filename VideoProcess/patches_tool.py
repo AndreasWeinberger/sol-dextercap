@@ -2,26 +2,21 @@ from PyQt5.QtGui import QKeySequence, QFont
 from PyQt5.QtCore import (Qt, pyqtSignal, pyqtSlot)
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QStatusBar, QDockWidget, QFileDialog,
-    QMessageBox, QInputDialog, QLineEdit, QGridLayout, QPushButton, QMenu, QAbstractItemView
+    QMessageBox, QInputDialog, QLineEdit, QGridLayout, QPushButton, QMenu, QAbstractItemView, QSlider, QHBoxLayout
 )
 
 import pyqtgraph as pg
 
-import os
+from copy import deepcopy
 import sys
 import json
-
-from typing import Tuple, Dict, List, Any, Union
-
-from datetime import datetime
-
 
 class Block():
     def __init__(self, label: str = '**'):
         self.label = label
 
     def on_label_changed(self, text: str):
-        self.label = text
+        self.label = text.upper()
         print(f'> Edited block to "{self.label}"')
 
 
@@ -35,7 +30,7 @@ class Patch():
         return self(name, [[Block() for y in range(cols)] for x in range(rows)])
 
     def duplicate(self):
-        return Patch(self.name, self.blocks)
+        return Patch(self.name, deepcopy(self.blocks))
 
     def rows(self):
         return len(self.blocks)
@@ -93,7 +88,6 @@ class PatchWidget(QWidget):
     4. Move patches up or down the list using "Shift+Up" or "Shift+Down"
     5. Duplicate patches up or down using "Shift+Alt+Up" or "Shift+Alt+Down"
     6. Use "File -> Load/Save" to load or save a patches.json file
-    7. Use "File -> Export" to export patches as .json file
     '''
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -101,7 +95,8 @@ class PatchWidget(QWidget):
 
         self.font_name = 'Consolas'
         self.title_font_size = 32
-        self.buttons_font_size = 32
+        self.plus_minus_buttons_font_size = 24
+        self.plus_minus_buttons_thickness = 45
         self.labels_font_size = 36
         self.ui_scale = 1.0
 
@@ -168,29 +163,29 @@ class PatchWidget(QWidget):
             add_col_btn = QPushButton()
             add_col_btn.clicked.connect(self.add_col)
             add_col_btn.setText('+')
-            add_col_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.buttons_font_size)))
-            add_col_btn.setFixedWidth(int(self.ui_scale*35))
+            add_col_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.plus_minus_buttons_font_size)))
+            add_col_btn.setFixedWidth(int(self.ui_scale*self.plus_minus_buttons_thickness))
             add_col_btn.setSizePolicy(1, 3)
             self.layout().addWidget(add_col_btn, 1, self.selectedPatch.cols(), self.selectedPatch.rows(), 1)
             rem_col_btn = QPushButton()
             rem_col_btn.clicked.connect(self.rem_col)
             rem_col_btn.setText('-')
-            rem_col_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.buttons_font_size)))
-            rem_col_btn.setFixedWidth(int(self.ui_scale*35))
+            rem_col_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.plus_minus_buttons_font_size)))
+            rem_col_btn.setFixedWidth(int(self.ui_scale*self.plus_minus_buttons_thickness))
             rem_col_btn.setSizePolicy(1, 3)
             self.layout().addWidget(rem_col_btn, 1, self.selectedPatch.cols()+1, self.selectedPatch.rows(), 1)
 
             add_row_btn = QPushButton()
             add_row_btn.clicked.connect(self.add_row)
             add_row_btn.setText('+')
-            add_row_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.buttons_font_size)))
-            add_row_btn.setFixedHeight(int(self.ui_scale*35))
+            add_row_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.plus_minus_buttons_font_size)))
+            add_row_btn.setFixedHeight(int(self.ui_scale*self.plus_minus_buttons_thickness))
             self.layout().addWidget(add_row_btn, self.selectedPatch.rows()+1, 0, 1, self.selectedPatch.cols())
             rem_row_btn = QPushButton()
             rem_row_btn.clicked.connect(self.rem_row)
             rem_row_btn.setText('-')
-            rem_row_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.buttons_font_size)))
-            rem_row_btn.setFixedHeight(int(self.ui_scale*35))
+            rem_row_btn.setFont(QFont(self.font_name, int(self.ui_scale*self.plus_minus_buttons_font_size)))
+            rem_row_btn.setFixedHeight(int(self.ui_scale*self.plus_minus_buttons_thickness))
             self.layout().addWidget(rem_row_btn, self.selectedPatch.rows()+2, 0, 1, self.selectedPatch.cols())
         else:
             title = QPushButton()
@@ -249,17 +244,22 @@ class Window(QMainWindow):
         self.setCentralWidget(self.main_widget)
 
         def update_table_only():
-            curr_list = self.table.items
-            new_list = self.main_widget.patches
+            names_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i,0))) for i in range(self.table.rowCount())]
+            rows_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i,1))) for i in range(self.table.rowCount())]
+            cols_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i,2))) for i in range(self.table.rowCount())]
+            
+            curr_list = [[names_col[i], rows_col[i], cols_col[i]] for i in range(self.table.rowCount())]
+            new_list = [[p.name, p.rows(), p.cols()] for p in self.main_widget.patches]
 
             if curr_list != new_list:
-                data = [[p.name, p.rows(), p.cols()] for p in new_list]
-                self.table.setData(data)
+                self.table.setData(new_list)
                 self.table.setHorizontalHeaderLabels(["Name", "Rows", "Cols"])
                 if self.table.columnWidth(0) < 200:
                     self.table.setColumnWidth(0, 200)
                 self.table.setColumnWidth(1, 100)
                 self.table.setColumnWidth(2, 100)
+            else:
+                print('\nSAME\n')
 
         def update_all():
             self.unsaved_changes = True
@@ -282,7 +282,7 @@ class Window(QMainWindow):
 
         self.patches_file = None
         self.ui_scale = 1.0
-        self.unsaved_changes=  False
+        self.unsaved_changes = False
 
     #############
     # ADD PATCH #
@@ -386,7 +386,7 @@ class Window(QMainWindow):
         new_cols = max(2, self.table.item(idx, 2).value)
 
         if new_name != self.main_widget.patches[idx].name:
-            self.main_widget.patches[idx].name = self.main_widget.get_unique_patch_name(new_name)
+            self.main_widget.patches[idx].name = self.main_widget.get_unique_patch_name(new_name).strip().replace(' ', '_')
 
         self.main_widget.patches[idx].setRows(new_rows)
         self.main_widget.patches[idx].setCols(new_cols)
@@ -524,18 +524,24 @@ class Window(QMainWindow):
             self.patches_file = fn
 
         ob = {}
+        ob['__def__'] = {}
 
         for patch in self.main_widget.patches:
             all = []
+            strings = []
             for id_row, row in enumerate(patch.blocks):
+                row_string = ''
                 for id_col, block in enumerate(row):
-                    e = {'row': id_row, 'col': id_col, 'label': block.label}
+                    e = {'row': id_row, 'col': id_col, 'label': block.label.upper()}
                     all.append(e)
+                    row_string += block.label.upper()
+                strings.append(row_string)
             ob[patch.name] = all
-
+            ob['__def__'][patch.name] = strings
+        
         json_string = json.dumps(ob, separators=(',', ":"))  # Compact JSON structure
         open(self.patches_file, "w+", 1).write(json_string)
-        print(f'> Exported {len(self.main_widget.patches)} patches to "{self.patches_file}"')
+        print(f'> Saved {len(self.main_widget.patches)} patches to "{self.patches_file}"')
 
         self.status.showMessage(f'> Saved to file: {self.patches_file}')
         self.unsaved_changes = False
@@ -565,15 +571,19 @@ class Window(QMainWindow):
         self.main_widget.sigPatchSelected.emit(-1)
 
         for name in ob:
+            # Skip the patch definitions
+            if name == '__def__':
+                continue
+            
             patch = Patch.new(self.main_widget.get_unique_patch_name(name), 2, 2)
             for b in ob[name]:
-                r = b['row']
-                c = b['col']
-                if r > patch.rows()-1:
-                    patch.setRows(r+1)
-                if c > patch.cols()-1:
-                    patch.setCols(c+1)
-                patch.blocks[r][c].label = b['label']
+                r = max(1,b['row'])+1
+                c = max(1,b['col'])+1
+                if r > patch.rows():
+                    patch.setRows(r)
+                if c > patch.cols():
+                    patch.setCols(c)
+                patch.blocks[r-1][c-1].label = b['label'].strip().replace(' ', '_')
 
             self.main_widget.patches.append(patch)
 
@@ -590,10 +600,13 @@ class Window(QMainWindow):
             if btn == QMessageBox.StandardButton.No:
                 break
 
-            btn = QMessageBox.warning(self, 'Override', f'Do you wish to override the file?\n{self.patches_file}',
-                                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            
-            self.saveAs() if btn == QMessageBox.StandardButton.No else self.save()
+            if self.patches_file:
+                btn = QMessageBox.warning(self, 'Override', f'Do you wish to override the file?\n{self.patches_file}',
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+
+                self.saveAs() if btn == QMessageBox.StandardButton.No else self.save()
+                
+            self.saveAs()
 
         print("> Bye Bye!")
         super().close()

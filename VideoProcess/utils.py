@@ -478,7 +478,8 @@ def load_label_patches(fn: str):
     '''
 
     with open(fn) as f:
-        patches_def: dict = json.load(f)
+        patches = json.load(f)
+        patches_def: dict = patches['__def__']
 
     print(list(patches_def.keys()))
 
