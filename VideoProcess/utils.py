@@ -478,8 +478,7 @@ def load_label_patches(fn: str):
     '''
 
     with open(fn) as f:
-        patches = json.load(f)
-        patches_def: dict = patches['__def__']
+        patches_def = json.load(f)
 
     print(list(patches_def.keys()))
 
@@ -488,7 +487,7 @@ def load_label_patches(fn: str):
     patches = {}
     for name, patch_def in patches_def.items():
         # print(name, patch_def)
-        markers, patch = parse_patch(patch_def)  # eg. ['**8@**9@**C@**E@**', '7$**8$**9$**C$**E$', '**6%**7%**8%**9%**']
+        markers, patch = parse_patch([''.join(r) for r in patch_def])  # eg. ['**8@**9@**C@**E@**', '7$**8$**9$**C$**E$', '**6%**7%**8%**9%**']
         # print(markers, patch)
         marker_defs.extend(markers)
         patches[name] = patch

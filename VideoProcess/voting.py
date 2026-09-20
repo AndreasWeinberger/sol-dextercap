@@ -9,15 +9,14 @@ import os
 def load_patches(patch_path):
     with open(patch_path, 'r') as f:
         patch_json = json.load(f)
-    patches = {} # key: patch_name, value: [row, col, label]
+    patches = patch_json # key: patch_name, value: [row, col, label]
     inversed_patches = {}  # key: label, value: patch_name
 
-    for name, p in patch_json.items():
-        #new_p = [[p[i][j:j+2] for j in range(0, len(p[i]), 2)] for i in range(len(p))]
-        patches[name] = p
-        for i in p:
-            if i['label'] != "**":
-                inversed_patches[i['label']] = name
+    for patch_name, patch in patch_json.items():
+        for row in patch:
+            for label in row:
+                if label != "**":
+                    inversed_patches[label] = patch_name
 
     return patches, inversed_patches
 
@@ -253,17 +252,18 @@ def voting(input:str,output:str, patch_path:str, refined:bool = True):
     subfolders = [os.path.join(input,f) for f in subfolders]
     
     for folder in subfolders:
+        
         block_path = f"{folder}\\{os.path.basename(folder)}_block_labels.json"
         new_block_json = modify_block_labels(block_path, patch_path)
 
         json_string = json.dumps(new_block_json, separators=(',', ":"))  # Compact JSON structure
-        open(f'{folder}_voted.json', "w+", 1).write(json_string)
+        open(f'{folder}\\{os.path.basename(folder)}_voted.json', "w+", 1).write(json_string)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', default='', type=str, required=True, help="Folder with subfolders per camera")
-    parser.add_argument('--output', default='', type=str, required=True, help="Output _voted.json file")
+    parser.add_argument('--output', default='', type=str, required=True, help="Output _voted.json file(s)")
     parser.add_argument('--patches', default='', type=str, required=True, help="Folder or single file containing patches with row / col information")
     parser.add_argument('--refined', default=True, type=bool, help='Whether to use refined markers files. Look for "_refined_markers.json" instead of "_markers.json"')
     args = parser.parse_args()

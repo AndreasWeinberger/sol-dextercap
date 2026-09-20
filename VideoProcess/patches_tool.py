@@ -18,6 +18,8 @@ class Block():
     def on_label_changed(self, text: str):
         self.label = text.upper()
         print(f'> Edited block to "{self.label}"')
+    def __str__(self):
+        return self.label
 
 
 class Patch():
@@ -406,6 +408,7 @@ class Window(QMainWindow):
         self.table.setFont(QFont('Consolas', 18))
         self.table.itemSelectionChanged.connect(self.row_selected)
         self.table.model().dataChanged.connect(self.row_changed)
+        self.table.setSortingEnabled(False)
 
         menu: QMenu = self.table.contextMenu
         menu.addSeparator()
@@ -524,20 +527,15 @@ class Window(QMainWindow):
             self.patches_file = fn
 
         ob = {}
-        ob['__def__'] = {}
 
         for patch in self.main_widget.patches:
-            all = []
-            strings = []
-            for id_row, row in enumerate(patch.blocks):
-                row_string = ''
-                for id_col, block in enumerate(row):
-                    e = {'row': id_row, 'col': id_col, 'label': block.label.upper()}
-                    all.append(e)
-                    row_string += block.label.upper()
-                strings.append(row_string)
+            all :list[str]= []
+            for _, row in enumerate(patch.blocks):
+                block_strings = []
+                for _, block in enumerate(row):
+                    block_strings.append(block.label.upper())
+                all.append(block_strings)
             ob[patch.name] = all
-            ob['__def__'][patch.name] = strings
         
         json_string = json.dumps(ob, separators=(',', ":"))  # Compact JSON structure
         open(self.patches_file, "w+", 1).write(json_string)
@@ -570,20 +568,11 @@ class Window(QMainWindow):
         self.main_widget.patches.clear()
         self.main_widget.sigPatchSelected.emit(-1)
 
-        for name in ob:
-            # Skip the patch definitions
-            if name == '__def__':
-                continue
-            
-            patch = Patch.new(self.main_widget.get_unique_patch_name(name), 2, 2)
-            for b in ob[name]:
-                r = max(1,b['row'])+1
-                c = max(1,b['col'])+1
-                if r > patch.rows():
-                    patch.setRows(r)
-                if c > patch.cols():
-                    patch.setCols(c)
-                patch.blocks[r-1][c-1].label = b['label'].strip().replace(' ', '_')
+        for name in ob:            
+            patch = Patch.new(self.main_widget.get_unique_patch_name(name), len(ob[name]), len(ob[name][0]))
+            for row_idx in range(len(ob[name])):
+                for col_idx in range(len(ob[name][row_idx])):
+                    patch.blocks[row_idx][col_idx].label = ob[name][row_idx][col_idx].strip().replace(' ', '_')
 
             self.main_widget.patches.append(patch)
 

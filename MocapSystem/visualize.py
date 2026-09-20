@@ -5,7 +5,7 @@ from typing import List
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
-import utils
+from VideoProcess.utils import load_label_patches, get_edges_from_block_def
 
 
 def init_rerun(name: str, camera_ids: List[int]):
@@ -58,15 +58,14 @@ def init_rerun(name: str, camera_ids: List[int]):
     rr.send_blueprint(blueprint)
 
 
-def visualize_cameras(
-    camera_ids: List[int], camera_param_path: str, camera_param_fmt: str
-):
+def visualize_cameras(camera_ids: List[int], folder):
+    camera_names = os.listdir(folder)
+
     for cam_id in camera_ids:
-        cam_param = np.load(
-            os.path.join(camera_param_path, camera_param_fmt.format(cam_id))
-        )
-        instrinsic = cam_param["intrinsics"]
-        tvec, rmat = cam_param["tvecs"], cam_param["rmats"]
+
+        with np.load(os.path.join(folder, camera_names[cam_id-1], f'{camera_names[cam_id-1]}_extrinsics.npz')) as f:
+            instrinsic = f["intrinsics"]
+            tvec, rmat = f["tvecs"], f["rmats"]
 
         # rr.log(f"camera/label_{cam_id}",
         #     rr.Points3D(
@@ -94,6 +93,9 @@ def visualize_cameras(
             f"camera/camera_{cam_id}",
             rr.Transform3D(mat3x3=rmat, translation=tvec, from_parent=True),
         )
+        # rr.log(f"camera/camera_{cam_id}", rr.Pinhole(image_from_camera=instrinsic, width=2448, height=2048))
+        # rr.log(f"camera/camera_{cam_id}", rr.Transform3D(mat3x3=rmat, translation=tvec, relation=rr.TransformRelation.ChildFromParent))
+
 
 
 def visualize_2d_points(
@@ -155,6 +157,7 @@ def visualize_edges(
 
     rr.log("edges", rr.LineStrips3D(edge_points, radii=0.0002, colors=color))
 
+
 def visualize_blocks(points, blocks):
     for label in blocks:
         marker_indices = blocks[label]["markers"]
@@ -177,57 +180,59 @@ def visualize_blocks(points, blocks):
 
 def visualize():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input-file", type=str, required=True)
-    parser.add_argument(
-        "--camera-ids",
-        default="2,3,5,6,7,8,9,11,13,14",
-        type=str,
-        help="id of cameras, in the fmt of 2,3,4...",
-    )
-    parser.add_argument(
-        "--label-patches", type=str, required=True, help="label_patches.json"
-    )
+    parser.add_argument("--input", type=str, required=True, help='Camera subfolders each containing _extrinsics.npz files')
 
-    parser.add_argument("--cam-param-path", type=str, required=True)
-    parser.add_argument("--cam-param-fmt", type=str, default="{0}.npz")
+    parser.add_argument("-f", "--file", type=str, required=True, help='Either _triangulation.npz file or _markers_3d_positions.npy file')
+    parser.add_argument("--camera-ids", default="1,2,3,4,5,6,7,8,9,10,11,12,13", type=str, help="id of cameras, in the fmt of 2,3,4...")
+    parser.add_argument('-l', "--label-patches", type=str, required=True, help="label_patches.json")
 
     parser.add_argument("--fps", type=int, default=20)
 
     args = parser.parse_args()
 
     camera_ids = np.array(list(map(int, args.camera_ids.strip("()\"',").split(","))))
-    print(f"camera_ids: {camera_ids}")
+    print(f"> Camera_ids: {camera_ids}")
     fps = args.fps
 
-    marker_defs, block_defs, patches = utils.load_label_patches(args.label_patches)
-    edges = utils.get_edges_from_block_def(block_defs=block_defs)
+    marker_defs, block_defs, patches = load_label_patches(args.label_patches)
+    edges = get_edges_from_block_def(block_defs=block_defs)
 
-    with np.load(args.input_file) as data:
+    data = np.load(args.file)
+
+    use_visualize_2d = False
+
+    if 'markers_undistorted' in data:
+        use_visualize_2d = True
         points_3d = data["markers_3d_positions"]  # [nframe, npts, 3]
         points_2d = data["markers_undistorted"]  # [nframe, ncam, npts, 3]
+    else:
+        points_3d = data
 
     points_3d[np.all(points_3d == [-1e3, -1e3, -1e3], axis=-1)] = 0
 
-    invalid_points = points_2d[..., 0] < 0
-    points_2d[invalid_points] = -1
+    if use_visualize_2d:
+        invalid_points = points_2d[..., 0] < 0
+        points_2d[invalid_points] = -1
 
-    num_frames, num_cameras, num_points = points_2d.shape[:3]
-    assert num_cameras == len(camera_ids)
+    if use_visualize_2d:
+        num_frames, num_cameras, num_points = points_2d.shape[:3]
+        assert num_cameras == len(camera_ids)
+    else:
+        num_frames = points_3d.shape[0]
 
-    init_rerun("hand mocap", camera_ids=camera_ids)
-    visualize_cameras(
-        camera_ids=camera_ids,
-        camera_param_path=args.cam_param_path,
-        camera_param_fmt=args.cam_param_fmt,
-    )
+    init_rerun("Triangulation Visualization (2D & 3D)" if use_visualize_2d else "Triangulation Visualization (3D only)", camera_ids=camera_ids)
+    visualize_cameras(camera_ids, args.input)
 
     for frame in range(num_frames):
         rr.set_time("stable_time", duration=frame / fps)
 
         visualize_points(points_3d[frame])
-        visualize_2d_points(camera_ids, points_2d[frame], edges)
+        if use_visualize_2d:
+            visualize_2d_points(camera_ids, points_2d[frame], edges)
         visualize_edges(points_3d[frame], edges)
         visualize_blocks(points_3d[frame], block_defs)
+
+    input("Press any key to close")
 
 
 if __name__ == "__main__":

@@ -2,15 +2,18 @@ import numpy as np
 import json
 import matplotlib.pyplot as plt
 from .utils import load_label_patches
+import os
+import argparse
 
-def get_point_idx(patches_file, pts_file):
-    marker_defs, block_defs, patches = load_label_patches(patches_file)
 
-    # print(len(marker_defs), marker_defs, "\n")
-    # print(len(block_defs), block_defs, "\n")
-    # print(len(patches), patches, "\n")
+def get_point_idx(marker_defs, block_defs, patches):
+    print(f'> Marker defs: {len(marker_defs)}')
+    print(f'> Block defs: {len(block_defs)}')
+    print(f'> Patches: {len(patches)}')
+    print('---')
 
-    parts = [9,8,7, 12,11,10, 6,5,4, 3,2,1, 15,14,13, 13,0,0,16, 20,21,22,23,24,25]  # need to be changed
+    parts = [i for i in range(len(patches))]
+    # parts = [9, 8, 7, 12, 11, 10, 6, 5, 4, 3, 2, 1, 15, 14, 13, 13, 0, 0, 16, 20, 21, 22, 23, 24, 25]  # need to be changed
     part2idx = {}
     for i, (name, _) in enumerate(patches.items()):
         part2idx[name] = parts[i]
@@ -26,45 +29,42 @@ def get_point_idx(patches_file, pts_file):
             else:
                 assert idx[marker_idx] == part2idx[blk_def['patch']]
 
-    idx = np.array(idx)
-    np.save("result/0428/idx.npy", idx)
+    return np.array(idx)
 
 
-def remove_outliers_patch(data0, idx_path, max_len=0.01):
+def remove_outliers_patch(data0, indices, max_len=0.01):
     data = data0.copy()
-    indices = np.load(idx_path)
     frame_num, point_num, _ = data.shape
     unique_classes = np.unique(indices)
 
     remove_points = 0
 
     for frame in range(frame_num):
-        if frame % 500 == 0:
-            print(f"Patch processing frame {frame} / {frame_num}")
+        print(f'> Remove outliers (patch) {frame} / {frame_num}')
 
         for idx in unique_classes:
             class_indices = np.where((indices == idx))[0]
             class_points = data[frame, class_indices, :]
-            
+
             valid_mask = (class_points != [-1000, -1000, -1000]).all(axis=1)
             valid_points = class_points[valid_mask]
             # print(valid_points.shape)
             valid_indices = class_indices[valid_mask]
             k = valid_points.shape[0]  # number of valid points
-            
+
             if k <= 1:
                 data[frame, valid_indices] = [-1000, -1000, -1000]
                 continue
-            
+
             # distance matrix
             diff = valid_points[:, np.newaxis, :] - valid_points[np.newaxis, :, :]
             distances = np.sqrt(np.sum(diff**2, axis=2))    # [m, m]
-            
+
             # adjacency matrix
             adj = (distances <= max_len)
             np.fill_diagonal(adj, False)
             # print(adj)
-                        
+
             rows, cols = np.triu_indices(k, 1)  # indices of right-up-triangluar of a k*k matrix
             edge_mask = adj[rows, cols]
             # print(rows)
@@ -72,19 +72,19 @@ def remove_outliers_patch(data0, idx_path, max_len=0.01):
             # print(edge_mask)
             # print(rows[edge_mask])
             # print(cols[edge_mask])
-            
+
             edges = np.column_stack((rows[edge_mask], cols[edge_mask]))
             # print(edges.shape)
 
             # union-find set
             parent = list(range(k))
-            
+
             def find(u):
                 while parent[u] != u:
-                    parent[u] = parent[parent[u]] # path compression
+                    parent[u] = parent[parent[u]]  # path compression
                     u = parent[u]
                 return u
-            
+
             def union(u, v):
                 root_u = find(u)
                 root_v = find(v)
@@ -93,7 +93,7 @@ def remove_outliers_patch(data0, idx_path, max_len=0.01):
 
             for u, v in edges:
                 union(u, v)
-            
+
             roots = [find(i) for i in range(k)]
             unique_roots, counts = np.unique(roots, return_counts=True)
 
@@ -103,14 +103,15 @@ def remove_outliers_patch(data0, idx_path, max_len=0.01):
                 continue
 
             max_root = unique_roots[np.argmax(counts)]
-            
+
             for i in range(k):
                 if find(i) != max_root:
                     remove_points += 1
                     original_idx = valid_indices[i]
                     data[frame, original_idx] = [-1000, -1000, -1000]
-    
-    print(f"Removed points: {remove_points} / {frame_num} = {remove_points / frame_num}")
+
+    print(f'> Removed points (patch):  {remove_points} = {remove_points / frame_num} avg per frame')
+    print('---')
     return data
 
 
@@ -136,8 +137,7 @@ def remove_outliers_window(data, discontinuity=[], window_size=30, z_threshold=2
 
     for i in range(len(discontinuity) - 1):
         for frame in range(discontinuity[i], discontinuity[i+1]):
-            if frame % 500 == 0:
-                print(f"Windows processing frame {frame} / {frame_num}")
+            print(f'> Remove outliers (window) {frame} / {frame_num}')
 
             start = max(discontinuity[i], frame - window_size // 2)
             end = min(discontinuity[i+1], frame + window_size // 2 + 1)
@@ -145,7 +145,7 @@ def remove_outliers_window(data, discontinuity=[], window_size=30, z_threshold=2
 
             for point in range(point_num):
                 if np.all(data[frame, point] == [-1000, -1000, -1000]):
-                    continue    
+                    continue
 
                 point_coords = window_data[:, point, :]
                 valid_coords = point_coords[~np.all(point_coords == [-1000, -1000, -1000], axis=1)]
@@ -163,73 +163,74 @@ def remove_outliers_window(data, discontinuity=[], window_size=30, z_threshold=2
                     result[frame, point] = [-1000, -1000, -1000]
                     remove_points += 1
 
-    print(f"remove points: {remove_points} / {frame_num} = {remove_points/frame_num}")
+    print(f'> Removed points (window): {remove_points} = {remove_points / frame_num} avg per frame')
+    print('---')
     return result
 
 
-def remove_outliers_object(data0, max_len=0.087):
-    data = data0.copy()
-    frame_num, point_num, _ = data.shape
-    remove_points = 0
+# def remove_outliers_object(data0, max_len=0.087):
+#     data = data0.copy()
+#     frame_num, point_num, _ = data.shape
+#     remove_points = 0
 
-    for frame in range(frame_num):
-        if frame % 500 == 0:
-            print(f"Patch processing frame {frame} / {frame_num}")
+#     for frame in range(frame_num):
+#         if frame % 500 == 0:
+#             print(f"Patch processing frame {frame} / {frame_num}")
 
-        frame_points = data[frame, :, :]        
-        frame_indices = np.arange(point_num)
-        valid_mask = (frame_points != [-1000, -1000, -1000]).all(axis=1)
-        valid_points = frame_points[valid_mask]
-        valid_indices = frame_indices[valid_mask]
-        k = valid_points.shape[0]  # number of valid points
-        
-        if k <= 1:
-            continue
-        
-        # distance matrix
-        diff = valid_points[:, np.newaxis, :] - valid_points[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diff**2, axis=2))    # [m, m]
-        
-        # adjacency matrix
-        adj = (distances <= max_len)
-        np.fill_diagonal(adj, False)
-                    
-        rows, cols = np.triu_indices(k, 1)  # indices of right-up-triangluar of a k*k matrix
-        edge_mask = adj[rows, cols]
-        
-        edges = np.column_stack((rows[edge_mask], cols[edge_mask]))
+#         frame_points = data[frame, :, :]
+#         frame_indices = np.arange(point_num)
+#         valid_mask = (frame_points != [-1000, -1000, -1000]).all(axis=1)
+#         valid_points = frame_points[valid_mask]
+#         valid_indices = frame_indices[valid_mask]
+#         k = valid_points.shape[0]  # number of valid points
 
-        # union-find set
-        parent = list(range(k))
-        
-        def find(u):
-            while parent[u] != u:
-                parent[u] = parent[parent[u]] # path compression
-                u = parent[u]
-            return u
-        
-        def union(u, v):
-            root_u = find(u)
-            root_v = find(v)
-            if root_u != root_v:
-                parent[root_v] = root_u
+#         if k <= 1:
+#             continue
 
-        for u, v in edges:
-            union(u, v)
-        
-        roots = [find(i) for i in range(k)]
-        unique_roots, counts = np.unique(roots, return_counts=True)
+#         # distance matrix
+#         diff = valid_points[:, np.newaxis, :] - valid_points[np.newaxis, :, :]
+#         distances = np.sqrt(np.sum(diff**2, axis=2))    # [m, m]
 
-        max_root = unique_roots[np.argmax(counts)]
-        
-        for i in range(k):
-            if find(i) != max_root:
-                remove_points += 1
-                original_idx = valid_indices[i]
-                data[frame, original_idx] = [-1000, -1000, -1000]
+#         # adjacency matrix
+#         adj = (distances <= max_len)
+#         np.fill_diagonal(adj, False)
 
-    print(f"Removed points: {remove_points} / {frame_num} = {remove_points / frame_num}")
-    return data
+#         rows, cols = np.triu_indices(k, 1)  # indices of right-up-triangluar of a k*k matrix
+#         edge_mask = adj[rows, cols]
+
+#         edges = np.column_stack((rows[edge_mask], cols[edge_mask]))
+
+#         # union-find set
+#         parent = list(range(k))
+
+#         def find(u):
+#             while parent[u] != u:
+#                 parent[u] = parent[parent[u]]  # path compression
+#                 u = parent[u]
+#             return u
+
+#         def union(u, v):
+#             root_u = find(u)
+#             root_v = find(v)
+#             if root_u != root_v:
+#                 parent[root_v] = root_u
+
+#         for u, v in edges:
+#             union(u, v)
+
+#         roots = [find(i) for i in range(k)]
+#         unique_roots, counts = np.unique(roots, return_counts=True)
+
+#         max_root = unique_roots[np.argmax(counts)]
+
+#         for i in range(k):
+#             if find(i) != max_root:
+#                 remove_points += 1
+#                 original_idx = valid_indices[i]
+#                 data[frame, original_idx] = [-1000, -1000, -1000]
+
+#     print(f"Removed points: {remove_points} / {frame_num} = {remove_points / frame_num}")
+#     return data
 
 
 def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -1000]):
@@ -248,8 +249,7 @@ def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -100
     print(discontinuity)
 
     for point in range(point_num):
-        if point % 500 == 0:
-            print(f"Interpolating point {point} / {point_num}")
+        # print(f"> Interpolating point {point} / {point_num}")
 
         for i in range(len(discontinuity) - 1):
             start, end = discontinuity[i], discontinuity[i+1]
@@ -271,81 +271,97 @@ def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -100
 
                     if front_weight and back_weight:
                         front = np.array(data[front_frame, point])
-                        back  = np.array(data[back_frame, point])
+                        back = np.array(data[back_frame, point])
                         result[frame, point] = (front * front_weight + back * back_weight) / (front_weight + back_weight)
                         interpolate_points += 1
 
-    print(f"interpolate points: {interpolate_points} / {frame_num} = {interpolate_points / frame_num}")
+    print(f"> Interpolate points: {interpolate_points} / {frame_num} = {interpolate_points / frame_num}")
+    print('---')
     return result
 
 
-def remove_outliers(path, idx_path, date):
-    data = np.load(path)
+def remove_outliers(output, markers_3d_positions_fn, indices):
+    data = np.load(markers_3d_positions_fn)
+
     discontinuity = []
-    observed_points_per_frame(data)
-    r1 = remove_outliers_patch(data, idx_path=idx_path, max_len=0.01)
+
+    (avg, std, min, max) = observed_points_per_frame(data)
+    print(f'> Initial observed points - Avg: {avg} Std: {std:.02f} Min: {min} Max: {max}')
+    print('---')
+
+    r1 = remove_outliers_patch(data, indices, max_len=0.01)
     r3 = remove_outliers_window(r1, discontinuity)
-    # r3 = remove_outliers_object(r2)
+
+    (avg, std, min, max) = observed_points_per_frame(r3)
+    print(f'> Post observed points - Avg: {avg} Std: {std:.02f} Min: {min} Max: {max}')
+    print('---')
+
     r4 = interpolate_points(r3, discontinuity)
-    observed_points_per_frame(r4)
-    np.save(f"result/{date}/pts_final.npy", r4)
-    
-    idx = np.load(idx_path)
-    print(idx.shape, r3.shape)
-    mask = idx < 20
-    idx_hand, idx_obj = idx[idx<20], idx[idx>=20]
-    pts_hand = np.array([[r3[i][j] for j in range(len(idx)) if idx[j] < 20] for i in range(len(r3))])
-    pts_obj = np.array([[r3[i][j] for j in range(len(idx)) if idx[j] >= 20] for i in range(len(r3))])
-    
-    print(pts_hand.shape, pts_obj.shape)
 
-    np.save(f"result/{date}/pts_hand.npy", pts_hand)
-    np.save(f"result/{date}/idx_hand.npy", idx_hand)
-    np.save(f"object/{date}/pts_obj.npy", pts_obj)
-    np.save(f"object/{date}/idx_obj.npy", idx_obj)
+    fn_raw = f"{output}_markers_3d_positions.npy"
+    fn_int = f"{output}_markers_3d_positions_interpolated.npy"
+
+    np.save(fn_raw, r3)
+    np.save(fn_int, r4)
+    print(f'> Saved files to "{fn_raw}" and "{fn_int}"\n')
 
 
-
-def statistic_edge_length(videos=[1,2,3,4,5,6,7,8,9,10,11,13,14]):
-    minE, maxE = 1000, -1
-    length = []
-    for v in videos:
-        json_path = f"dataset/mocap0428/jsons/{v}.json"
-        print(json_path)
-        with open(json_path, "r") as f:
-            data = json.load(f)
-        for frame in data:
-            print(frame["blocks"].__len__(), frame["keypoints"].__len__())
-            for b in frame["blocks"]:
-                pts = np.array(b["corners"])
-                for i in range(4):
-                    len = np.linalg.norm(pts[i] - pts[(i+1)%4])
-                    length.append(len)
-                    if len > maxE: maxE = len
-                    if len < minE: minE = len
-    print(minE, maxE, length.__len__())
-    plt.hist(length, bins=20, edgecolor='black', alpha=0.7)
-    plt.savefig("statistic.png")
+# def statistic_edge_length(videos=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14]):
+#     minE, maxE = 1000, -1
+#     length = []
+#     for v in videos:
+#         json_path = f"dataset/mocap0428/jsons/{v}.json"
+#         print(json_path)
+#         with open(json_path, "r") as f:
+#             data = json.load(f)
+#         for frame in data:
+#             print(frame["blocks"].__len__(), frame["keypoints"].__len__())
+#             for b in frame["blocks"]:
+#                 pts = np.array(b["corners"])
+#                 for i in range(4):
+#                     len = np.linalg.norm(pts[i] - pts[(i+1) % 4])
+#                     length.append(len)
+#                     if len > maxE:
+#                         maxE = len
+#                     if len < minE:
+#                         minE = len
+#     print(minE, maxE, length.__len__())
+#     plt.hist(length, bins=20, edgecolor='black', alpha=0.7)
+#     plt.savefig("statistic.png")
 
 
 def observed_points_per_frame(pts):
     observed = ~np.all(pts == -1000, axis=2)
     observed_points_per_frame = np.sum(observed, axis=1)
-    average_observed_points = np.mean(observed_points_per_frame)
-    print(average_observed_points)
+    avg = np.mean(observed_points_per_frame)
+    std = np.std(observed_points_per_frame)
+    min = np.min(observed_points_per_frame)
+    max = np.max(observed_points_per_frame)
+
+    return avg, std, min, max
 
 
-def statistic_point_seen(pts_path, patch_path):
-    marker_defs, block_defs, patches = load_label_patches(patch_path)
-    idx = np.load(pts_path)
-    for i in range(len(idx)):
-        for j in range(len(idx[i])):
-            if idx[i][j] < 20:
-                print(idx[i][j])    
+# def statistic_point_seen(pts_path, patch_path):
+#     marker_defs, block_defs, patches = load_label_patches(patch_path)
+#     idx = np.load(pts_path)
+#     for i in range(len(idx)):
+#         for j in range(len(idx[i])):
+#             if idx[i][j] < 20:
+#                 print(idx[i][j])
 
 
 if __name__ == "__main__":
-    remove_outliers("result/0428/pts.npy", "result/0428/idx.npy", "0428")
-    # statistic_edge_length()
-    # get_point_idx("dataset/mocap0428/patches_0428.json", "result/0428/pts.npy")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--markers-3d-positions', default='', type=str, required=True, help='Single marker_3d_positions.npy file')
+    parser.add_argument('-l', '--label-patches', type=str, required=True, help='Single label_patches.json file')
+    parser.add_argument('-o', '--output', type=str, default='', help='Output folder')
 
+    args = parser.parse_args()
+
+    os.makedirs(args.output, exist_ok=True)
+
+    marker_defs, blocks, patches = load_label_patches(args.label_patches)
+
+    indices = get_point_idx(marker_defs, blocks, patches)
+    remove_outliers(os.path.join(args.output, os.path.basename(args.label_patches).split('.')[0]), args.markers_3d_positions, indices)
+    # statistic_edge_length()

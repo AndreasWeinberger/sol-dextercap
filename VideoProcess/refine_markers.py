@@ -81,12 +81,10 @@ def subpixel_refine(gray: np.ndarray, markers: np.ndarray, blocks: np.ndarray, *
     return markers_subpixel, blocks_refined, removed_markers, removed_blocks
 
 
-def refine_markers(input: str, output:str, label_patches:str, override:bool= False, save_video:bool = True, start_frame: int = 0, end_frame: int = -1):
+def refine_markers(input: str, output: str, override: bool = False, save_video: bool = True, start_frame: int = 0, end_frame: int = -1):
 
     in_folder, in_file = os.path.split(input)
     out_folder, out_file = os.path.split(output)
-
-    marker_defs, block_defs, patches = utils.load_label_patches(label_patches)
 
     in_split = in_file.split('.')
     out_split = out_file.split('.')
@@ -96,7 +94,7 @@ def refine_markers(input: str, output:str, label_patches:str, override:bool= Fal
     elif in_split[0] != '':
         output = f'{out_folder}\\{in_split[0]}'
 
-    def process_frame(frame_idx:int, frame:np.ndarray, output: str, all_markers, override:bool = False):
+    def process_frame(frame_idx: int, frame: np.ndarray, output: str, all_markers, ffmpeg_process):
 
         all_marker_pos = np.concatenate([frame['checked_markers'] for frame in all_markers if len(frame['checked_markers']) > 0], axis=0)
         # print(all_marker_pos.shape)
@@ -138,70 +136,72 @@ def refine_markers(input: str, output:str, label_patches:str, override:bool= Fal
                 all_markers[frame_idx]['refined_block_labels'] = block_labels_refined
 
         if save_video:
-            frame_maker = frame[:]
+            frame_marker = frame[:]
             block_pts = [np.round(markers_subpixel[list(block_indices)].reshape(-1, 1, 2)).astype(int) for block_indices in blocks_refined]
-            cv2.polylines(frame_maker, block_pts, True, color=[230, 250, 50], thickness=1)
+            cv2.polylines(frame_marker, block_pts, True, color=[230, 250, 50], thickness=2)
 
-            frame_maker = utils.draw_markers(frame_maker, markers, radius=5, color=(180, 180, 55))
-            frame_maker = utils.draw_markers(frame_maker, markers_subpixel, radius=5, color=(36, 200, 255))
+            frame_marker = utils.draw_markers(frame_marker, markers, radius=3, color=(255, 255, 255))
+            frame_marker = utils.draw_markers(frame_marker, markers_subpixel, radius=6, color=(20, 255, 20))
 
-            frame_maker = frame_maker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]][:]
+            frame_marker = frame_marker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]][:]
 
-            frame_marker = skimage.color.gray2rgb(frame_marker)
-            out_img = (frame_marker*255).astype(np.uint8)
-            
+            # frame_marker = skimage.color.gray2rgb(frame_marker)
+            # out_img = (frame_marker*255).astype(np.uint8)
+            out_img = frame_marker.astype(np.uint8)
+
             if ffmpeg_process is None:
-                import ffmpeg            
-                ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_maker.shape[1] if frame_maker.shape[1] % 2 == 0 else frame_maker.shape[1] + 1}x{frame_maker.shape[0] if frame_maker.shape[0] % 2 == 0 else frame_maker.shape[0] + 1}').output(
-                                output, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
+                import ffmpeg
+                ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}').output(
+                    output, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
             ffmpeg_process.stdin.write(out_img)
 
         return all_markers, ffmpeg_process
 
-    def finish(output, ffmpeg_process, all_markers):
+    def finish(output, ffmpeg_process, all_markers, start_time):
         if ffmpeg_process is not None:
-            t_finish_start = time.time()
             ffmpeg_process.stdin.close()
             ffmpeg_process.wait()
-            print(f'> Video saved to "{output}_refined_markers.mp4" in {(time.time() - t_finish_start):.2f}s')
+            print(f'> Video saved to "{output}_refined_markers.mp4"')
             print('---')
 
         if len(all_markers) == 0:
             print(f'> No markers to save!\n')
             print('---')
             return
-            
-        # End
-        t_finish_start = time.time()
-        import json
-        with open(f'{output}_markers.json', 'w') as f:
-            json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
-            open(f'{output}_markers.json', "w+", 1).write(json_string)
-            
-            all = sum([len(frame['markers']) for frame in all_markers])
-            
-            avg = int(all / len(all_markers))
-            print(f'> Saved markers to "{output}_markers.json"\n\n\tTotal: {all}\n\tAverage: {avg}\n\tTime: {(time.time() - t_finish_start):.2f}s\n')
-            print('---')
 
+        if output != '':
+            # End
+            import json
+            json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+            open(f'{output}_block_labels.json', "w+", 1).write(json_string)
+
+            sum_markers = sum([len(frame['markers']) for frame in all_markers])
+            sum_ref_markers = sum([len(frame['refined_markers']) for frame in all_markers])
+            sum_ref_blocks = sum([len(frame['refined_blocks']) for frame in all_markers])
+
+            avg_markers = int(sum_markers / len(all_markers))
+            avg_ref_markers = int(sum_ref_markers / len(all_markers))
+            avg_ref_blocks = int(sum_ref_blocks / len(all_markers))
+            print(f'> Saved refined markers to "{output}_block_labels.json"\n\n\tFrames: {len(all_markers)}\n\tMarkers: {sum_markers} (Avg: {avg_markers})\n\tRefined markers: {sum_ref_markers} (Avg: {avg_ref_markers})\n\tRefined blocks: {sum_ref_blocks} (Avg: {avg_ref_blocks})\n\tTime: {(time.time() - start_time):.2f}s\n')
+            print('---')
 
     # Start
     t_start_global = time.time()
 
     if os.path.isfile(input) and in_split[1] == 'mp4':
-        with open(f'{output}_markers.json') as f:
+        with open(f'{output}_block_labels.json') as f:
             all_markers = json.load(f)
         ffmpeg_process = None
         count = 0
 
-        for idx, fn in enumerate(iio.imiter(input, plugin="pyav"), start_frame):
-            if end_frame > -1 and idx > end_frame:
+        for frame_idx, frame in enumerate(iio.imiter(input, plugin="pyav"), start_frame):
+            if end_frame > -1 and frame_idx > end_frame:
                 break
 
-            all_markers, ffmpeg_process = process_frame(idx, fn, f'{output}_refined_markers.mp4', all_markers, save_video, ffmpeg_process)
+            all_markers, ffmpeg_process = process_frame(frame_idx, frame, f'{output}_refined_markers.mp4', all_markers, ffmpeg_process)
             count += 1
 
-        finish(f'{output}_refined_markers.json', ffmpeg_process, all_markers)
+        finish(output, ffmpeg_process, all_markers)
 
     else:
         subfolders = os.listdir(input)
@@ -213,11 +213,10 @@ def refine_markers(input: str, output:str, label_patches:str, override:bool= Fal
 
         base_output = output
 
-        for idx_folder, subfolder in enumerate(subfolders):
+        for folder_idx, subfolder in enumerate(subfolders):
             images = [os.path.join(subfolder, frame) for frame in os.listdir(subfolder)]
             if len(images) > 0:
                 sorted(images, key=lambda fn: os.path.basename(fn))
-
 
             output = os.path.join(base_output, os.path.basename(subfolder))
 
@@ -225,39 +224,39 @@ def refine_markers(input: str, output:str, label_patches:str, override:bool= Fal
                 os.makedirs(output, exist_ok=True)
 
             output += f'\\{os.path.basename(subfolder)}'
-            
-            with open(f'{output}_markers.json') as f:
+
+            with open(f'{output}_block_labels.json') as f:
                 all_markers = json.load(f)
-                
+
             ffmpeg_process = None
             count = 0
 
             # Start
             t_start = time.time()
 
-            for id_img, fn in enumerate(images, start_frame):
-                if end_frame > -1 and id_img > end_frame:
+            for frame_idx, frame in enumerate(images, start_frame):
+                if (end_frame > -1 and frame_idx > end_frame) or frame_idx > len(all_markers) - 1:
                     break
 
-                if not os.path.isfile(fn):
-                    print(f'> Failed to read "{fn}"')
+                if not os.path.isfile(frame):
+                    print(f'> Failed to read "{frame}"')
                     break
 
-                frame = skimage.io.imread(fn)
+                frame = skimage.io.imread(frame)
 
-                all_markers, ffmpeg_process = process_frame(id_img, frame, f'{output}_refined_markers.mp4', all_markers, save_video, ffmpeg_process)
+                all_markers, ffmpeg_process = process_frame(frame_idx, frame, f'{output}_refined_markers.mp4', all_markers, ffmpeg_process)
                 count += 1
 
-            finish(output, ffmpeg_process, all_markers)
+            finish(output, ffmpeg_process, all_markers, t_start)
 
     print(f'> Refining markers complete\n\tTotal time: {(time.time() - t_start_global):.2f}s')
     print('---')
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--input', type=str, required=True, help="Images or videos")
     parser.add_argument('-o', '--output', type=str, required=True, help="Yields refined markers and video")
-    parser.add_argument('-p', '--label-patches', type=str, required=True, help='label_patches.json')
 
     parser.add_argument('--override', default=False, action='store_true', help='override current marker and block labels')
     parser.add_argument('--save-video', type=bool, default=True)
@@ -265,7 +264,7 @@ def main():
     parser.add_argument('--end-frame', type=int, default=-1, help="-1 for all frames in a folder")
     parser.add_argument('--gpu', type=int, default=0, help="Which gpu to use (if there are multiple)")
 
-    args = parser.parse_args(args)
+    args = parser.parse_args()
 
     if len(args.output) != 0:
         if not os.path.isfile(args.output) and not os.path.isdir(args.output):
@@ -273,14 +272,13 @@ def main():
 
     print(f'> Input: {args.input}')
     print(f'> Output: {args.output}')
-    print(f'> Label patches: {args.label_patches}\n')
     print(f'> Override: {args.override}')
     print(f'> Save video: {args.save_video}')
     print(f'> Start frame: {args.start_frame}')
     print(f'> End frame: {args.end_frame}')
     print(f'---')
 
-    refine_markers(args.input, args.output, args.label_patches, args.override, args.save_video, args.start_frame,args.end_frame)
+    refine_markers(args.input, args.output, args.override, args.save_video, args.start_frame, args.end_frame)
 
     # with multiprocessing.Pool(processes=len(cam_list)) as pool:
     #    pool.map(refine, cam_list)

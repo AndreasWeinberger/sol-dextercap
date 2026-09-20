@@ -342,7 +342,7 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
             all = sum([len(frame['markers']) for frame in all_markers])
             
             avg = int(all / len(all_markers))
-            print(f'> Saved markers to "{output}_markers.json"\n\n\tTotal: {all}\n\tAverage: {avg}\n\tTime: {(time.time() - t_finish_start):.2f}s\n')
+            print(f'> Saved markers to "{output}_markers.json"\n\n\tTotal markers: {all}\n\tAvg: {avg}\n\tTime: {(time.time() - t_finish_start):.2f}s\n')
             print('---')
 
     # Start
