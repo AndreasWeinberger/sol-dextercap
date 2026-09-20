@@ -1,5 +1,5 @@
 Data/
-Out/
+_temp/
 
 # vscode
 .vscode
@@ -35,15 +35,11 @@ __pycache__
 *.jpg
 *.png
 *.bmp
-*.zip
-*.npy
-*.npz
 *.pkl
 
 # Data
 *.obj
 *.csv
-*.npz
 
 # temp
 *.key
@@ -59,7 +55,6 @@ experiments/
 try*/
 video*/
 !VideoProcess/
-out/
 DexterHand
 DexterHandInternal
 DexterHand-rerun

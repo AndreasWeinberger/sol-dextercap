@@ -434,10 +434,12 @@ def triangulation(marker_positions: np.ndarray, cameras: List[CameraInfo], min_s
 
     plt.plot(markers_in_enough_cam.sum(-1), 'x-')
     # plt.show()
+    plt.title(f'Markers visible in >={min_seen_cam} cameras')
     t0 = time.time()
 
+    print(markers_undistorted[0][0][498])
+
     for frame_i in range(num_frames):
-        # print(f'solving frame {frame_i}/{num_frames}...')
 
         pts_in_enough_cam = markers_undistorted[frame_i, :, markers_in_enough_cam[frame_i]]
         masks_in_3_cam = valid_markers[frame_i, :, markers_in_enough_cam[frame_i]]
@@ -450,7 +452,7 @@ def triangulation(marker_positions: np.ndarray, cameras: List[CameraInfo], min_s
             P = [cameras[cam_i].projection for cam_i in seen_cam]
             x = pts_in_enough_cam[m_i, seen_cam]
 
-            if use_ransac and len(P) > 2:
+            if use_ransac and len(P) > min_seen_cam-1:
                 pt3d, cam_used, errors = utils.triangulate_robust(P, x, inliner_thr=ransac_inliner_thr)
                 pts_3d[m_i] = pt3d
                 markers_reproj_error[frame_i, masks_in_3_cam[m_i], valid_marker_idx[m_i]] = errors
@@ -464,7 +466,7 @@ def triangulation(marker_positions: np.ndarray, cameras: List[CameraInfo], min_s
         markers_3d_positions[frame_i, markers_in_enough_cam[frame_i]] = pts_3d
 
         t1 = time.time()
-        print(f'> Solving frame {frame_i}/{num_frames} took {t1-t0:.2f}s')
+        print(f'> Solving frame {frame_i} / {num_frames} took {t1-t0:.2f}s')
         t0 = t1
 
     return markers_undistorted, markers_3d_positions, markers_reproj_error, camera_used_flags
@@ -477,11 +479,11 @@ def main():
     parser.add_argument('--label-patches', type=str, required=True, help='label_patches.json - Note: each object will be triangulated separately')
     parser.add_argument('-o', '--output', type=str, default='')
 
-    parser.add_argument('--min-seen-cam', type=int, default=3, help='if a maker cannot be seen by such number of cameras, it will be neglect')
-    parser.add_argument('--marker-reproj-error-thr', type=int, default=10, help='marker error threshold, in px')
+    parser.add_argument('--min-seen-cam', type=int, default=2, help='if a maker cannot be seen by such number of cameras, it will be neglect')
+    parser.add_argument('--marker-reproj-error-thr', type=int, default=5, help='marker error threshold, in px')
 
-    parser.add_argument('--use-ransac', default=1, action='store_true')
-    parser.add_argument('--ransac-inliner-thr', type=int, default=10, help='inliner threshold, in px')
+    parser.add_argument('--use-ransac', default=0, action='store_true')
+    parser.add_argument('--ransac-inliner-thr', type=int, default=5, help='inliner threshold, in px')
 
     parser.add_argument('--show-blocks', type=int, default=1)
     parser.add_argument('--show-2d-plot', type=int,  default=0)
@@ -497,73 +499,65 @@ def main():
     camera_ids = np.array(list(map(int, args.camera_ids.strip('()"\',').split(','))))
     print(f'> Camera IDs: {camera_ids}')
 
-    def process(patch_name, m, b, p):
-        # marker positions
-        marker_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_voted.json') for cam_i in camera_ids]
-        marker_info = load_marker_files(marker_files)
-        # print(marker_info)
-        marker_positions = parse_marker_positions(marker_info, m)
+    marker_defs, blocks, patches = utils.load_label_patches(args.label_patches)
+    patch_name = os.path.basename(args.label_patches).split('.')[0]
 
-        # camera parameters
-        cam_param_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_extrinsics.npz') for cam_i in camera_ids]
-        cameras = load_cam_calib_info_np(cam_param_files)
+    # marker positions
+    marker_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_voted.json') for cam_i in camera_ids]
+    marker_info = load_marker_files(marker_files)
+    # print(marker_info)
+    marker_positions = parse_marker_positions(marker_info, marker_defs)
 
-        # now try triangulation
-        marker_positions = marker_positions.astype(float)
-        markers_undistorted, markers_3d_positions, markers_reproj_error, camera_used_flags = \
-            triangulation(marker_positions, cameras, args.min_seen_cam, args.use_ransac, args.ransac_inliner_thr)
+    # camera parameters
+    cam_param_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_extrinsics.npz') for cam_i in camera_ids]
+    cameras = load_cam_calib_info_np(cam_param_files)
 
-        avg = np.mean(markers_reproj_error)
-        std = np.std(markers_reproj_error)
-        min = np.min(markers_reproj_error)
-        max = np.max(markers_reproj_error)
+    # now try triangulation
+    marker_positions = marker_positions.astype(float)
+    markers_undistorted, markers_3d_positions, markers_reproj_error, camera_used_flags = \
+        triangulation(marker_positions, cameras, args.min_seen_cam, args.use_ransac, args.ransac_inliner_thr)
 
-        print(f'> Reprojection error - Avg: {avg:.02f} Std: {std:.02f} Min: {min} Max: {max}')
+    avg = np.mean(markers_reproj_error)
+    std = np.std(markers_reproj_error)
+    min = np.min(markers_reproj_error)
+    max = np.max(markers_reproj_error)
 
-        # remove markers whose re-projection error is too large in at least one camera
-        markers_reproj_error_check = markers_reproj_error[:]
-        markers_reproj_error_check[np.logical_not(camera_used_flags)] = -1
-        markers_reproj_error_check = markers_reproj_error_check.max(axis=1)  # max over all cameras
-        invalid_markers = markers_reproj_error_check > args.marker_reproj_error_thr
-        print(f'> Invalid markers: {len(invalid_markers)} (Thr.: {args.marker_reproj_error_thr})')
-        markers_3d_positions[invalid_markers] = -1000
+    print(f'> Reprojection error - Avg: {avg:.02f} Std: {std:.02f} Min: {min} Max: {max}')
 
-        avg, std, min, max = observed_points_per_frame(markers_3d_positions)
-        print(f'> Shape of markers_3d_positions: {markers_3d_positions.shape}')
-        print(f'> Observed points per frame - Avg: {avg:.02f} Std: {std:.02f} Min: {min} Max: {max}')
+    # remove markers whose re-projection error is too large in at least one camera
+    markers_reproj_error_check = markers_reproj_error[:]
+    markers_reproj_error_check[np.logical_not(camera_used_flags)] = -1
+    markers_reproj_error_check = markers_reproj_error_check.max(axis=1)  # max over all cameras
+    invalid_markers = markers_reproj_error_check > args.marker_reproj_error_thr
+    print(f'> Invalid markers: {len(invalid_markers)} (Thr.: {args.marker_reproj_error_thr})')
+    markers_3d_positions[invalid_markers] = -1000
 
-        fn = os.path.join(args.output, f'{patch_name}_markers_3d_positions.npy')
-        np.save(fn, markers_3d_positions)
+    avg, std, min, max = observed_points_per_frame(markers_3d_positions)
+    print(f'> Shape of markers_3d_positions: {markers_3d_positions.shape}')
+    print(f'> Observed points per frame - Avg: {avg:.02f} Std: {std:.02f} Min: {min} Max: {max}')
 
-        if len(args.output) > 0:
-            fn = os.path.join(args.output, f'{patch_name}_triangulation.npz')
-            np.savez_compressed(fn,
-                                marker_positions=marker_positions,          # [nframe, ncamera, npt, 2]
-                                markers_undistorted=markers_undistorted,    # [nframe, ncamera, npt, 2]
-                                markers_3d_positions=markers_3d_positions,  # [nframe, npt, 3]
-                                markers_reproj_error=markers_reproj_error,  # [nframe, ncam, npt]
-                                camera_used_flags=camera_used_flags         # [nframe, ncam, npt]
-                                )
+    fn = os.path.join(args.output, f'{patch_name}_markers_3d_positions.npy')
+    np.save(fn, markers_3d_positions)
 
-        if args.show_2d_plot:
-            animate_marker_positions(markers_undistorted, min_valid_value=-10, min_seen_cam=args.min_seen_cam,
-                                     marker_defs=m, blocks=b, patches=p,
-                                     show_blocks=args.show_blocks, save_video=args.save_2d_video)
+    if len(args.output) > 0:
+        fn = os.path.join(args.output, f'{patch_name}_triangulation.npz')
+        np.savez_compressed(fn,
+                            marker_positions=marker_positions,          # [nframe, ncamera, npt, 2]
+                            markers_undistorted=markers_undistorted,    # [nframe, ncamera, npt, 2]
+                            markers_3d_positions=markers_3d_positions,  # [nframe, npt, 3]
+                            markers_reproj_error=markers_reproj_error,  # [nframe, ncam, npt]
+                            camera_used_flags=camera_used_flags         # [nframe, ncam, npt]
+                            )
 
-        if args.show_3d_plot:
-            animate_marker_positions_3d(markers_3d_positions, min_valid_value=-10, min_seen_cam=args.min_seen_cam,
-                                        marker_defs=m, blocks=b, patches=p,
-                                        show_blocks=args.show_blocks, save_video=args.save_3d_video)
+    if args.show_2d_plot:
+        animate_marker_positions(markers_undistorted, min_valid_value=-10, min_seen_cam=args.min_seen_cam,
+                                 marker_defs=marker_defs, blocks=blocks, patches=patches,
+                                 show_blocks=args.show_blocks, save_video=args.save_2d_video)
 
-    if not os.path.basename(args.label_patches).endswith('.json'):
-        patch_names = os.listdir(args.label_patches)
-        patches_files = [os.path.join(args.label_patches, p) for p in patch_names]
-        for p_idx, p in enumerate(patches_files):
-            marker_defs, blocks, patches = utils.load_label_patches(p)
-            process(patch_names[p_idx].split('.')[0], marker_defs, blocks, patches)
-    else:
-        marker_defs, blocks, patches = utils.load_label_patches(args.label_patches)
-        process(os.path.basename(args.label_patches).split('.')[0], marker_defs, blocks, patches)
+    if args.show_3d_plot:
+        animate_marker_positions_3d(markers_3d_positions, min_valid_value=-10, min_seen_cam=args.min_seen_cam,
+                                    marker_defs=marker_defs, blocks=blocks, patches=patches,
+                                    show_blocks=args.show_blocks, save_video=args.save_3d_video)
 
 
 if __name__ == '__main__':

@@ -431,6 +431,8 @@ class Window(QMainWindow):
         menu = self.menuBar().addMenu("&File")
         menu.addAction("&Open...", self.open, shortcut='Ctrl+O')
         menu.addSeparator()
+        menu.addAction("&Import...", self.import_patches, shortcut='Ctrl+I')
+        menu.addSeparator()
         menu.addAction("&Save...", self.save, shortcut='Ctrl+S')
         menu.addAction("Save As...", self.saveAs)
         menu.addSeparator()
@@ -546,27 +548,32 @@ class Window(QMainWindow):
 
         return True
 
-    def open(self, fn: str = ''):
+    def import_patches(self):
+        self.open(fn='', do_import=True)
+
+    def open(self, fn: str = '', do_import:bool = False):
         if fn == '':
-            if len(self.main_widget.patches) > 0:
+            if len(self.main_widget.patches) > 0 and not do_import:
                 btn = QMessageBox.warning(self, 'Warning', 'You will lose unsaved patches by loading from a patches.json file.\nContinue?',
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
 
                 if btn == QMessageBox.StandardButton.No:
                     return
 
-            fn, _ = QFileDialog.getOpenFileName(self, 'Open patches.json', filter=(f'JSON Files (*.json);;' + 'All files (*.*)'))
+            fn, _ = QFileDialog.getOpenFileName(self, f'{"Import" if do_import else "Open"} patches.json', filter=(f'JSON Files (*.json);;' + 'All files (*.*)'))
 
         if fn == '':
             return
 
-        self.patches_file = fn
+        if not do_import:
+            self.patches_file = fn
 
         with open(fn) as f:
             ob = json.load(f)
 
-        self.main_widget.patches.clear()
-        self.main_widget.sigPatchSelected.emit(-1)
+        if not do_import:
+            self.main_widget.patches.clear()
+            self.main_widget.sigPatchSelected.emit(-1)
 
         for name in ob:            
             patch = Patch.new(self.main_widget.get_unique_patch_name(name), len(ob[name]), len(ob[name][0]))
@@ -577,8 +584,8 @@ class Window(QMainWindow):
             self.main_widget.patches.append(patch)
 
         self.main_widget.sigPatchesChanged.emit()
-        self.unsaved_changes = False
-        self.status.showMessage(f'> Opened file: {self.patches_file}')
+        self.unsaved_changes =  do_import
+        self.status.showMessage(f'> {"Imported" if do_import else "Opened"} file: {fn}')
 
     def close(self):
 

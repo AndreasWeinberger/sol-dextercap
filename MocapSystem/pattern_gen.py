@@ -4,7 +4,7 @@ import cv2
 
 
 # letters = "0123456789ACEFHPUY" + "0123456789ACEFHPUY"
-letters = "0123456789" + "ACEHNPRSTVXZ"
+letters = "0123456789" + "ACDEHNPRSTVXZ"
 # without B D F G I J K L M O Q U W Y
 left_letters = len(letters)
 letters += letters
@@ -29,7 +29,7 @@ digit_margin = 2
 font_height = 40
 text_top = 12
 underline = 50
-font = ImageFont.truetype(r'CONSOLAB.TTF', font_height)
+font = ImageFont.truetype('C:\\WINDOWS\\FONTS\\CONSOLAB.TTF', font_height)
 
 
 def prepare_digit_patches(background_color:int, foreground_color:int):
@@ -57,7 +57,6 @@ def prepare_digit_patches(background_color:int, foreground_color:int):
         x = digit_margin
         y = text_top
         draw.text((x, y), letter, fill=foreground_color, font=font)
-        
         right_digits.append(np.asarray(block))
 
     return left_digits, right_digits
