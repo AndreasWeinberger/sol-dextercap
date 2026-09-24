@@ -3,6 +3,8 @@ import math
 import numpy as np
 from scipy.optimize import minimize
 from scipy.spatial.transform import Rotation
+import argparse
+import os
 
 
 def filter_valid_points(pts, obj_positions, invalid_val=-1000):
@@ -214,10 +216,25 @@ def main(pts, obj_positions, discontinuity=[], start=0):
 
 
 if __name__ == "__main__":
-    pts = np.load("object/0414/pts_obj.npy")
-    print(pts.shape)
-    obj_positions = np.load("object/0414/cube_init.npy")
-    print(obj_positions.shape)
-    poses = main(pts, obj_positions, start=1334)
-    print(poses.shape)
-    np.save("object/0414/obj_poses.npy", poses)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--markers-3d-positions', default='markers_3d_positions.npy', type=str, required=True)
+    parser.add_argument('-i', '--init-points', default='init.npy', type=str, required=True)
+    parser.add_argument('-o', '--output', type=str, default='', required=True)
+    
+    parser.add_argument('-s', '--start-frame', default=0, type=int)
+
+    args = parser.parse_args()
+    
+    pts = np.load(args.markers_3d_positions)
+    print(f'> Shape of pts: {pts.shape}')
+    
+    obj_positions = np.load(args.init_points)
+    print(f'> Shape of obj_positions: {obj_positions.shape}')
+    
+    poses = main(pts, obj_positions, start=args.start_frame)
+    print(f'> Shape of poses: {poses.shape}')
+    print('---')
+    
+    os.makedirs(os.path.split(args.output)[0], exist_ok=True)
+    np.save(args.output, poses)
+    print(f'> Saved poses to "{args.output}"\n')

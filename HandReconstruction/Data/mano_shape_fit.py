@@ -7,8 +7,8 @@ import torch
 import trimesh
 from scipy.spatial.transform import Rotation as R
 
-import config
-from Utility.utils_mesh import compute_vertex_normals
+import HandReconstruction.config as config
+from HandReconstruction.Utility.utils_mesh import compute_vertex_normals
 
 bone_length_with_root = np.array(
     [

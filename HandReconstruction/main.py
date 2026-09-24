@@ -6,7 +6,7 @@ import torch
 from tqdm import tqdm
 
 import wandb
-from HandReconstruction import config
+from HandReconstruction.Result.Test_20260924 import config
 from HandReconstruction.hand_optimizer import (
     clear_loss_data,
     get_calibration_result,

@@ -487,7 +487,7 @@ def main():
         model_path=MANO_MODEL_PATH,
         model_type="mano",
         flat_hand_mean=True,
-        is_rhand=False,
+        is_rhand=True,
         use_pca=False,
         batch_size=num_frames_hand,
     )
@@ -706,6 +706,18 @@ def main():
                     orientation=object_orientations_quat_xyzw[frame_idx],
                     color=object_color,
                 )
+            elif "Test_20260924" in mocap_session_name_base:
+                rr.log(
+                    "object/cube",
+                    rr.Boxes3D(
+                        sizes=object_size,
+                        centers=object_translations[frame_idx],
+                        quaternions=object_orientations_quat_xyzw[frame_idx],
+                        colors=object_color,
+                        # fill_mode="DenseWireframe",
+                        fill_mode="Solid",
+                    ),
+                )
             else:
                 raise ValueError(f"Unknown object type: {mocap_session_name_base}")
 
@@ -730,3 +742,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    input('Press key to exit')

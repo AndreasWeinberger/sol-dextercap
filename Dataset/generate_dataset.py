@@ -1096,7 +1096,7 @@ def __main__():
     parser.add_argument("--hand_param_folder", type=str, required=True)
     parser.add_argument("--object_param_folder", type=str, required=True)
     parser.add_argument("--new_fps", default=60, type=int)
-    parser.add_argument("--save_original_data", default=False, type=bool)
+    parser.add_argument("--save_original_data", default=1, type=int)
     parser.add_argument("--save_path", default=None, type=str, required=False)
     args = parser.parse_args()
 

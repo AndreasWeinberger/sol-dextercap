@@ -1,9 +1,14 @@
 import json
 
 import numpy as np
+import argparse
+import os
 
-size = 0.005
-length, w, h = 0.15, 0.04, 0.04
+# Edge length of a block in a patch on the cube
+size = 0.00545
+
+# length, width, height of the object
+length, w, h = 0.03, 0.03, 0.03
 
 # The initial positions of the upper-left corners of each cube face, adjusted by offsets
 left_up = {
@@ -38,7 +43,13 @@ def main():
     Reads a JSON file containing patch masks for each cube face, computes the 3D positions of valid points
     according to the mask and face geometry, and saves the result as a numpy array.
     """
-    with open("dataset/mocap0414/patches_0414.json") as f:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--patches', default='patches.json', type=str, required=True)
+    parser.add_argument('-o', '--output', type=str, default='', help='Output folder')
+
+    args = parser.parse_args()
+    
+    with open(args.patches) as f:
         patches = json.load(f)
 
     points_positions = []  # List to store valid 3D point positions
@@ -49,7 +60,7 @@ def main():
         # print(patches[i])
         rows = len(patches[i]) + 1  # Number of rows in the grid (patch rows + 1)
         cols = (
-            len(patches[i][0]) // 2 + 1
+            len(patches[i][0]) + 1
         )  # Number of columns in the grid (patch cols/2 + 1)
 
         # position: (rows, cols, 3) array, each entry is a 3D coordinate
@@ -64,7 +75,7 @@ def main():
         for r in range(rows - 1):
             for c in range(cols - 1):
                 # If the patch is not masked (not '**'), mark the four corners as valid
-                if patches[i][r][c * 2 : c * 2 + 2] != "**":
+                if patches[i][r][c * 2: c * 2 + 2] != "**":
                     mask[r][c] = 1
                     mask[r + 1][c] = 1
                     mask[r][c + 1] = 1
@@ -78,9 +89,12 @@ def main():
                     points_positions.append(position[r][c])
 
     points_positions = np.array(points_positions)  # (N, 3) array of valid 3D points
-    print(points_positions.shape)
+    print(f'> Shape of points_positions: {points_positions.shape}')
+    print('---')
     # print(points_positions)
-    np.save("object/0414/cube_init.npy", points_positions)
+    os.makedirs(os.path.split(args.output)[0], exist_ok=True)
+    np.save(args.output, points_positions)
+    print(f'> Saved initial cube points to "{args.output}"\n')
 
 
 if __name__ == "__main__":
