@@ -17,7 +17,7 @@ class Block():
         self.label = label
 
     def on_label_changed(self, text: str):
-        self.label = text.upper()
+        self.label = text.strip().upper()
         print(f'> Edited block to "{self.label}"')
 
     def __str__(self):
@@ -249,6 +249,15 @@ class PatchWidget(QWidget):
                         all[b.label].append(p.name)
 
         return {k: v for k, v in all.items() if len(v) > 1}
+
+    def find_block_label(self, label: str):
+        found: dict[str, list[int]] = {}
+        for p in self.patches:
+            for row_idx, row in enumerate(p.blocks):
+                for col_idx, b in enumerate(row):
+                    if b.label == label:
+                        found[p.name] = [row_idx, col_idx]
+        return found
 
 
 class Window(QMainWindow):
@@ -504,6 +513,25 @@ class Window(QMainWindow):
         # View Menu
         menu = self.menuBar().addMenu("&View")
 
+        # Find block label
+        def find_block_label():
+            val, ret1 = QInputDialog.getText(self, 'Find block label', 'Label (max. 2 chars)')
+            val = val.strip().upper()
+            if ret1:
+                found_labels = self.main_widget.find_block_label(val)
+                if len(found_labels) > 0:
+                    found_str = ''
+                    for f in found_labels:
+                        found_str += f'> Patch "{f}": Row {found_labels[f][0]} Col {found_labels[f][1]}\n'
+                    QMessageBox.information(self, f'Found "{val}" in {len(found_labels)} patches', f'Label "{val}" was found in\n\n{found_str}',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+                else:
+                    QMessageBox.information(self, f'Not Found', f'Could not find label "{val}" in any patch!',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+
+        self.ui_scale_action = menu.addAction('Find Block Label')
+        self.ui_scale_action.triggered.connect(find_block_label)
+
         # UI scale
         def set_ui_scale():
             val, ret1 = QInputDialog.getDouble(self, 'UI Scale', 'UI Scale', self.ui_scale, min=0.0)
@@ -565,7 +593,7 @@ class Window(QMainWindow):
             for _, row in enumerate(patch.blocks):
                 block_strings = []
                 for _, block in enumerate(row):
-                    block_strings.append(block.label.upper())
+                    block_strings.append(block.label.strip().upper())
                 all.append(block_strings)
             ob[patch.name] = all
 
