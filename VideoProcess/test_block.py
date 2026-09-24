@@ -215,10 +215,8 @@ def draw_block_corners(image: np.ndarray, markers: np.ndarray, blocks: np.ndarra
     return image
 
 
-def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_file, label_confidence_thr: float = 0.5, start_frame: int = 0, end_frame: int = -1):
-    with open(marker_file) as f:
-        import json
-        consolidated_markers = json.load(f)
+def infer_block_labels(block_model: nn.Module, input: str, output:str, label_confidence_thr: float = 0.5, start_frame: int = 0, end_frame: int = -1):
+    
     in_folder, in_file = os.path.split(input)
     out_folder, out_file = os.path.split(output)
 
@@ -338,10 +336,10 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
             if end_frame > -1 and idx > end_frame:
                 break
 
-            all_markers, ffmpeg_process = process_frame(idx, fn, f'{output}_markers.mp4', all_markers, ffmpeg_process)
+            all_markers, ffmpeg_process = process_frame(idx, fn, f'{output}_block_labels.mp4', all_markers, ffmpeg_process)
             count += 1
 
-        finish(f'{output}_markers.json', ffmpeg_process, all_markers)
+        finish(f'{output}_block_labels.json', ffmpeg_process, all_markers)
 
     else:
         subfolders = os.listdir(input)
@@ -354,7 +352,9 @@ def infer_block_labels(block_model: nn.Module, input: str, output:str, marker_fi
         base = output
 
         for idx_folder, subfolder in enumerate(subfolders):
-            all_markers = consolidated_markers[os.path.basename(subfolder)]
+            with open(os.path.join(base,os.path.basename(subfolder),f'{os.path.basename(subfolder)}_refined_markers.json')) as f:
+                import json
+                all_markers = json.load(f)
             all_marker_pos = np.concatenate([frame['checked_markers'] for frame in all_markers if len(frame['checked_markers']) > 0], axis=0)
             roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 10)
             roi_max = np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int) + 10
@@ -399,11 +399,10 @@ if __name__ == '__main__':
     parser.add_argument('--block-model', default='', type=str, required=True)
 
     parser.add_argument('--input', default='', type=str, required=True, help="Input video/images")
-    parser.add_argument('--consolidated-markers', default='', type=str, required=True, help="Marker .json file from conv and edge models")
     parser.add_argument('--labels', default='', type=str, required=True, help="Dataset .json file with annotated data and image fields")
     parser.add_argument('--output', default='', type=str, required=True, help="Output file in .json format")
 
-    parser.add_argument('--label-confidence-thr', default=0.5, type=float, help="Default: 0.5")
+    parser.add_argument('--label-confidence-thr', default=0.7, type=float, help="Default: 0.5")
 
     parser.add_argument('--start-frame', type=int, default=0)
     parser.add_argument('--end-frame', type=int, default=-1)
@@ -436,4 +435,4 @@ if __name__ == '__main__':
     print(f'> End Frame: {args.end_frame}')
     print(f'---')
 
-    infer_block_labels(block_model, args.input, args.output, args.consolidated_markers, args.label_confidence_thr, args.start_frame, args.end_frame)
+    infer_block_labels(block_model, args.input, args.output, args.label_confidence_thr, args.start_frame, args.end_frame)

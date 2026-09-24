@@ -489,7 +489,7 @@ def main():
 
     parser.add_argument('--marker-distance-thr', default=65, type=int, help="Recommended: 150, Default: 65")
     parser.add_argument('--marker-confidence-thr', default=0.7, type=float, help="Recommended: 0.7, Default: 0.75")
-    parser.add_argument('--edge-confidence-thr', default=0.65, type=float, help="Recommended: 0.6, Default: 0.75")
+    parser.add_argument('--edge-confidence-thr', default=0.7, type=float, help="Recommended: 0.6, Default: 0.75")
 
     parser.add_argument('--start-frame', type=int, default=0)
     parser.add_argument('--end-frame', type=int, default=-1, help="-1 for all frames in a folder")

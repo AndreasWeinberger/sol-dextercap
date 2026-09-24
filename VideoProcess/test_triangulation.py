@@ -40,7 +40,7 @@ def load_marker_files(filenames: List[str]):
     return marker_info
 
 
-def parse_marker_positions(marker_info, marker_defs: List[Tuple[Tuple[str, int]]]):
+def parse_marker_positions(marker_info, marker_defs: List[Tuple[Tuple[str, int]]], combined_confidence_thr: float = 0.8):
     num_cameras = len(marker_info)
     num_frames = min(len(info) for info in marker_info)
     print(f'#cameras: {num_cameras} #frames: {num_frames}')
@@ -58,6 +58,8 @@ def parse_marker_positions(marker_info, marker_defs: List[Tuple[Tuple[str, int]]
     #       "blocks": [
     #           [ 1342.0, [ 0, 1, 4, 3]],
     #          ...]
+
+    count = 0
 
     for cam_idx, info in enumerate(marker_info):
         for frame_idx in range(num_frames):
@@ -84,7 +86,9 @@ def parse_marker_positions(marker_info, marker_defs: List[Tuple[Tuple[str, int]]
 
                 label_confidence = blk_label['label_confidence']
                 dir_confidence = blk_label['dir_confidence']
-                if dir_confidence*label_confidence < 0.8:
+                if dir_confidence*label_confidence < combined_confidence_thr:
+                    count += 1
+                    print(f'> Discarded {count} labels')
                     continue
 
                 # check if a label appears twice in the same image
@@ -437,8 +441,6 @@ def triangulation(marker_positions: np.ndarray, cameras: List[CameraInfo], min_s
     plt.title(f'Markers visible in >={min_seen_cam} cameras')
     t0 = time.time()
 
-    print(markers_undistorted[0][0][498])
-
     for frame_i in range(num_frames):
 
         pts_in_enough_cam = markers_undistorted[frame_i, :, markers_in_enough_cam[frame_i]]
@@ -480,10 +482,11 @@ def main():
     parser.add_argument('-o', '--output', type=str, default='')
 
     parser.add_argument('--min-seen-cam', type=int, default=2, help='if a maker cannot be seen by such number of cameras, it will be neglect')
-    parser.add_argument('--marker-reproj-error-thr', type=int, default=5, help='marker error threshold, in px')
+    parser.add_argument('--marker-reproj-error-thr', type=int, default=6, help='marker error threshold, in px')
+    parser.add_argument('--combined-confidence-thr', type=float, default=0.8, help='Only labels with label_confidence * dir_confidence > combined_confidence_thr are considered')
 
     parser.add_argument('--use-ransac', default=0, action='store_true')
-    parser.add_argument('--ransac-inliner-thr', type=int, default=5, help='inliner threshold, in px')
+    parser.add_argument('--ransac-inliner-thr', type=int, default=10, help='inliner threshold, in px')
 
     parser.add_argument('--show-blocks', type=int, default=1)
     parser.add_argument('--show-2d-plot', type=int,  default=0)
@@ -506,7 +509,7 @@ def main():
     marker_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_voted.json') for cam_i in camera_ids]
     marker_info = load_marker_files(marker_files)
     # print(marker_info)
-    marker_positions = parse_marker_positions(marker_info, marker_defs)
+    marker_positions = parse_marker_positions(marker_info, marker_defs, combined_confidence_thr=args.combined_confidence_thr)
 
     # camera parameters
     cam_param_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_extrinsics.npz') for cam_i in camera_ids]

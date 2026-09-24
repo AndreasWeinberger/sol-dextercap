@@ -19,3 +19,10 @@ python -m VideoProcess.test_conv --edge-model=./ckpts/0002/edge/best_lr_0.001_bs
 
 # TEST BLOCK
 python -m VideoProcess.test_block --block-model=./ckpts/0002/block/lr_0.0001_bs_64_checkpoint_157.pt --confidence-distance-thr=0.5 --input=./Blender/renders/cam_06.mp4 --marker-file=./Out/synth_01/conv/markers.json --labels=./Data/synth_01/dataset/train/labels.json --out-file=./Out/synth_01/block/blocks.json --out-video=./Out/synth_01/block/blocks.mp4 --start-frame=0 --end-frame=4 
+
+#################
+#### RAW CMDs ####
+#################
+
+# TRAIN BLOCK
+C:\Users\awein\anaconda3\Scripts\activate && conda activate HandMocap && P: && cd Projects\Sol\Prototypes\sol-dextercap && python -m VideoProcess.train_block --lr=0.001 --batch-size=512 --max-epochs=5000 --labels=./Data/synth_01/dataset/train/labels.json --out=./ckpts/0005/ --checkpoint=./ckpts/0004/block/lr_0.001_bs_512_checkpoint_243.pt

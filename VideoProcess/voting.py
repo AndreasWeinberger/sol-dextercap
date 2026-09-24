@@ -16,6 +16,7 @@ def load_patches(patch_path):
         for row in patch:
             for label in row:
                 if label != "**":
+                    assert label not in inversed_patches, f'Label "{label}" already exists in inversed_patches. This means there are duplicate block labels!'
                     inversed_patches[label] = patch_name
 
     return patches, inversed_patches
@@ -33,12 +34,11 @@ def locate_label(label, patch):
         for c in range(len(patch[r])):
             if patch[r][c] == label:
                 return (r, c)
-    print(f"Warning: label {label} not found in patch")
-    exit()
+    return (-1, -1)
 
 
 def dfs_vote(blk_idx, curr_direction, blocks, edge2blocks, patch,
-             inversed_patches, block_label_candidates, visited, r, c):
+             inversed_patches, block_label_candidates, visited, r, c, block_labels):
     # const: blocks, edge2blocks, patch, inversed_patches
 
     if visited[r][c]:
@@ -95,7 +95,50 @@ def dfs_vote(blk_idx, curr_direction, blocks, edge2blocks, patch,
             next_direction = (idx - i + 5) % 4
 
             dfs_vote(next_blk_idx, next_direction, blocks, edge2blocks, patch,
-                     inversed_patches, block_label_candidates, visited, next_r, next_c)
+                     inversed_patches, block_label_candidates, visited, next_r, next_c, block_labels)
+
+    return
+
+
+def patch_vote(blk_idx, curr_direction, blocks, edge2blocks, inversed_patches, patch_candidates: dict[str, int], visited: list[int], block_labels):
+
+    corners = blocks[blk_idx][1]
+
+    for i in range(4):  # up, right, down, left
+        edge = (corners[(curr_direction + i) % 4], corners[(curr_direction + i + 1) % 4])
+        if edge not in edge2blocks:
+            print(f"Warning: edge {edge} not in edge2blocks")
+            exit()
+
+        for next_blk_idx in edge2blocks[edge]:
+            if next_blk_idx == blk_idx:
+                continue
+
+            if next_blk_idx in visited:
+                continue
+
+            new_corners = blocks[next_blk_idx][1]
+            ind = corners[(curr_direction + i) % 4]
+            if ind not in new_corners:
+                continue
+            idx = new_corners.index(ind)
+            next_direction = (idx - i + 5) % 4
+
+            curr_label = block_labels[next_blk_idx]["label"]
+            curr_direction = block_labels[next_blk_idx]["direction"]
+
+            if curr_label != '**':
+                if curr_label in inversed_patches:
+                    p_name = inversed_patches[curr_label]
+                    if p_name not in patch_candidates:
+                        patch_candidates[p_name] = 0
+                    patch_candidates[p_name] += 1     # tried doing this with label confidence, not ideal, since it leads to a patch being selected in the max() later even though they are ambiguous
+                    if patch_candidates[p_name] > 2:    # it is very likely that we found the patch. skip iterating through the rest to save performance on large patches
+                        return
+
+            visited.append(next_blk_idx)
+
+            patch_vote(next_blk_idx, next_direction, blocks, edge2blocks, inversed_patches, patch_candidates, visited, block_labels)
 
     return
 
@@ -114,26 +157,13 @@ def process_frame(frame, patches, inversed_patches):
     refined_blocks = frame["refined_blocks"]
     block_labels = frame["block_labels"]
 
-    all = []
-    duplicates = 0
-
-    for b in block_labels:
-        if b['label'] != '**':
-            if b['label'] not in all:
-                all.append(b['label'])
-            else:
-                print(f'> Warning: {b["label"]} already exists')
-                duplicates += 1
-
-    print(f'> {duplicates} duplicate block labels')
-
     # remove blocks not in patches
-    for i in range(block_num-1, -1, -1):
-        if block_labels[i]["label"] not in inversed_patches and block_labels[i]["label"] != "**":
-            blocks.pop(i)
-            refined_blocks.pop(i)
-            block_labels.pop(i)
-            block_num -= 1
+    # for i in range(block_num-1, -1, -1):
+    #     if block_labels[i]["label"] not in inversed_patches and block_labels[i]["label"] != "**":
+    #         blocks.pop(i)
+    #         refined_blocks.pop(i)
+    #         block_labels.pop(i)
+    #         block_num -= 1
 
     block_label_candidates = [{} for _ in range(block_num)]  # key: (label, direction), value: vote count
 
@@ -161,11 +191,47 @@ def process_frame(frame, patches, inversed_patches):
         if curr_label == "**":
             dict_append(block_label_candidates[i], ("**", 4))
         else:
-            patch = patches[inversed_patches[curr_label]]
+            # change this to determine patch based on surrounding block labels
+            # traverse recursively through the patch in the image using edge2blocks
+            # determine row / column and where it sits in the scene, if that corresponds to a patch --> we found it
+            # otherwise fallback to default (retrieve patch from inversed patches)
+
+            if curr_label not in inversed_patches:
+                continue
+
+            patch_candidates = {}
+            patch_vote(i, curr_direction, blocks, edge2blocks, inversed_patches, patch_candidates, [i], block_labels)
+
+            max_patches = [k for k, v in patch_candidates.items() if v == max(patch_candidates.values())]
+            
+            p_name = inversed_patches[curr_label]
+
+            if len(max_patches) > 0:
+                if len(patch_candidates) > 1 and p_name != max_patches[0]:                
+                    if p_name not in patch_candidates:
+                        patch_candidates[p_name] = 1
+                    patch_candidates[p_name] += 1
+                    
+                    max_patches = [k for k, v in patch_candidates.items() if v == max(patch_candidates.values())]
+
+            if len(max_patches) == 1:
+                patch = patches[max_patches[0]]
+            else:
+                patch = patches[p_name]
+
             visited = [[False for _ in range(len(patch[0]))] for _ in range(len(patch))]
             r, c = locate_label(curr_label, patch)
             dfs_vote(i, curr_direction, blocks, edge2blocks, patch,
-                     inversed_patches, block_label_candidates, visited, r, c)
+                     inversed_patches, block_label_candidates, visited, r, c, block_labels)
+
+    # remove blocks not in patches
+    for i in range(block_num-1, -1, -1):
+        if block_labels[i]["label"] not in inversed_patches and block_labels[i]["label"] != "**":
+            blocks.pop(i)
+            refined_blocks.pop(i)
+            block_labels.pop(i)
+            block_label_candidates.pop(i)
+            block_num -= 1
 
     # select the best candidate
     new_blocks = []
@@ -226,19 +292,25 @@ def modify_block_labels(block_path, patch_path, refined: bool = True):
 
     print(f"> Camera {camera_id} - {len(block_json)} Frames: Total deleted: {deleted_num_total} Total changed: {changed_num_total}")
     print('---')
-    return new_block_json
+    return new_block_json, deleted_num_total, changed_num_total
 
 
 def voting(input: str, patch_path: str, refined: bool = True):
     subfolders = [os.path.join(input, f) for f in os.listdir(input)]
 
+    deleted_total, changed_total = 0, 0
+
     for folder in subfolders:
 
         block_path = f"{folder}\\{os.path.basename(folder)}_block_labels.json"
-        new_block_json = modify_block_labels(block_path, patch_path, refined)
+        new_block_json, deleted, changed = modify_block_labels(block_path, patch_path, refined)
+        deleted_total += deleted
+        changed_total += changed
 
         json_string = json.dumps(new_block_json, separators=(',', ":"))  # Compact JSON structure
         open(f'{folder}\\{os.path.basename(folder)}_voted.json', "w+", 1).write(json_string)
+    print(f'\n> Deleted {deleted_total} Changed {changed_total}')
+    print('\n---\n')
 
 
 def main():

@@ -173,7 +173,7 @@ def refine_markers(input: str, output: str, override: bool = False, save_video: 
             # End
             import json
             json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
-            open(f'{output}_block_labels.json', "w+", 1).write(json_string)
+            open(f'{output}_refined_markers.json', "w+", 1).write(json_string)
 
             sum_markers = sum([len(frame['markers']) for frame in all_markers])
             sum_ref_markers = sum([len(frame['refined_markers']) for frame in all_markers])
@@ -182,14 +182,14 @@ def refine_markers(input: str, output: str, override: bool = False, save_video: 
             avg_markers = int(sum_markers / len(all_markers))
             avg_ref_markers = int(sum_ref_markers / len(all_markers))
             avg_ref_blocks = int(sum_ref_blocks / len(all_markers))
-            print(f'> Saved refined markers to "{output}_block_labels.json"\n\n\tFrames: {len(all_markers)}\n\tMarkers: {sum_markers} (Avg: {avg_markers})\n\tRefined markers: {sum_ref_markers} (Avg: {avg_ref_markers})\n\tRefined blocks: {sum_ref_blocks} (Avg: {avg_ref_blocks})\n\tTime: {(time.time() - start_time):.2f}s\n')
+            print(f'> Saved refined markers to "{output}_refined_markers.json"\n\n\tFrames: {len(all_markers)}\n\tMarkers: {sum_markers} (Avg: {avg_markers})\n\tRefined markers: {sum_ref_markers} (Avg: {avg_ref_markers})\n\tRefined blocks: {sum_ref_blocks} (Avg: {avg_ref_blocks})\n\tTime: {(time.time() - start_time):.2f}s\n')
             print('---')
 
     # Start
     t_start_global = time.time()
 
     if os.path.isfile(input) and in_split[1] == 'mp4':
-        with open(f'{output}_block_labels.json') as f:
+        with open(f'{output}_markers.json') as f:
             all_markers = json.load(f)
         ffmpeg_process = None
         count = 0
@@ -225,7 +225,7 @@ def refine_markers(input: str, output: str, override: bool = False, save_video: 
 
             output += f'\\{os.path.basename(subfolder)}'
 
-            with open(f'{output}_block_labels.json') as f:
+            with open(f'{output}_markers.json') as f:
                 all_markers = json.load(f)
 
             ffmpeg_process = None

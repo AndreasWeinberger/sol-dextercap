@@ -498,18 +498,6 @@ def load_label_patches(fn: str):
                    for blk_name in itertools.chain.from_iterable(patch)
                    if blk_name != '**']
     # print(len(block_names), block_names)
-    
-    all={}
-    duplicates = 0
-    
-    for b in block_names:
-        if b[0] not in all.keys():
-            all[b[0]] = b[1]
-        else:
-            print(f'> Warning: {b} also exists in patch "{all[b[0]]}"')
-            duplicates+=1
-            
-    print(f'> {duplicates} block labels exists multiple times')
 
     blocks = {blk_name: {'markers': [0, 0, 0, 0], 'patch': patch_name} for blk_name, patch_name in block_names}
     for idx, marker_info in enumerate(marker_defs):

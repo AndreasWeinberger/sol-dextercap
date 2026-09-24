@@ -11,6 +11,7 @@ from copy import deepcopy
 import sys
 import json
 
+
 class Block():
     def __init__(self, label: str = '**'):
         self.label = label
@@ -18,6 +19,7 @@ class Block():
     def on_label_changed(self, text: str):
         self.label = text.upper()
         print(f'> Edited block to "{self.label}"')
+
     def __str__(self):
         return self.label
 
@@ -236,6 +238,18 @@ class PatchWidget(QWidget):
             count += 1
         return unique_name
 
+    def check_unique_block_labels(self):
+        all: dict[str, list[str]] = {}
+        for p in self.patches:
+            for row in p.blocks:
+                for b in row:
+                    if b.label != '**':
+                        if b.label not in all:
+                            all[b.label] = []
+                        all[b.label].append(p.name)
+
+        return {k: v for k, v in all.items() if len(v) > 1}
+
 
 class Window(QMainWindow):
     def __init__(self):
@@ -246,10 +260,10 @@ class Window(QMainWindow):
         self.setCentralWidget(self.main_widget)
 
         def update_table_only():
-            names_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i,0))) for i in range(self.table.rowCount())]
-            rows_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i,1))) for i in range(self.table.rowCount())]
-            cols_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i,2))) for i in range(self.table.rowCount())]
-            
+            names_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i, 0))) for i in range(self.table.rowCount())]
+            rows_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i, 1))) for i in range(self.table.rowCount())]
+            cols_col = [self.table.model().data(self.table.indexFromItem(self.table.item(i, 2))) for i in range(self.table.rowCount())]
+
             curr_list = [[names_col[i], rows_col[i], cols_col[i]] for i in range(self.table.rowCount())]
             new_list = [[p.name, p.rows(), p.cols()] for p in self.main_widget.patches]
 
@@ -528,17 +542,33 @@ class Window(QMainWindow):
 
             self.patches_file = fn
 
+        duplicates = self.main_widget.check_unique_block_labels()
+
+        if len(duplicates) > 0:
+            duplicates_str = ''
+            for dup in duplicates:
+                duplicates_str += f'> Label "{dup}": '
+                for p in duplicates[dup]:
+                    duplicates_str += f' "{p}"'
+                duplicates_str += '\n'
+
+            btn = QMessageBox.warning(self, 'Warning', f'There are duplicate block labels (Not recommended!)\n\n{duplicates_str}\nSave anyway?',
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+
+            if btn == QMessageBox.StandardButton.No:
+                return
+
         ob = {}
 
         for patch in self.main_widget.patches:
-            all :list[str]= []
+            all: list[str] = []
             for _, row in enumerate(patch.blocks):
                 block_strings = []
                 for _, block in enumerate(row):
                     block_strings.append(block.label.upper())
                 all.append(block_strings)
             ob[patch.name] = all
-        
+
         json_string = json.dumps(ob, separators=(',', ":"))  # Compact JSON structure
         open(self.patches_file, "w+", 1).write(json_string)
         print(f'> Saved {len(self.main_widget.patches)} patches to "{self.patches_file}"')
@@ -551,9 +581,9 @@ class Window(QMainWindow):
     def import_patches(self):
         self.open(fn='', do_import=True)
 
-    def open(self, fn: str = '', do_import:bool = False):
+    def open(self, fn: str = '', do_import: bool = False):
         if fn == '':
-            if len(self.main_widget.patches) > 0 and not do_import:
+            if self.unsaved_changes:
                 btn = QMessageBox.warning(self, 'Warning', 'You will lose unsaved patches by loading from a patches.json file.\nContinue?',
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
 
@@ -575,7 +605,7 @@ class Window(QMainWindow):
             self.main_widget.patches.clear()
             self.main_widget.sigPatchSelected.emit(-1)
 
-        for name in ob:            
+        for name in ob:
             patch = Patch.new(self.main_widget.get_unique_patch_name(name), len(ob[name]), len(ob[name][0]))
             for row_idx in range(len(ob[name])):
                 for col_idx in range(len(ob[name][row_idx])):
@@ -584,7 +614,7 @@ class Window(QMainWindow):
             self.main_widget.patches.append(patch)
 
         self.main_widget.sigPatchesChanged.emit()
-        self.unsaved_changes =  do_import
+        self.unsaved_changes = do_import
         self.status.showMessage(f'> {"Imported" if do_import else "Opened"} file: {fn}')
 
     def close(self):
@@ -598,10 +628,10 @@ class Window(QMainWindow):
 
             if self.patches_file:
                 btn = QMessageBox.warning(self, 'Override', f'Do you wish to override the file?\n{self.patches_file}',
-                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
 
                 self.saveAs() if btn == QMessageBox.StandardButton.No else self.save()
-                
+
             self.saveAs()
 
         print("> Bye Bye!")
