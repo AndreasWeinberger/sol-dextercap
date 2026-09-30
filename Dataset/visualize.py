@@ -405,6 +405,12 @@ def main():
         help="Whether to use hand local coordinates.",
     )
     parser.add_argument(
+        "--use_right_hand",
+        type=bool,
+        default=True,
+        help="Whether to use the right hand. False for left hand",
+    )
+    parser.add_argument(
         "--start",
         type=float,
         default=0.0,
@@ -487,7 +493,7 @@ def main():
         model_path=MANO_MODEL_PATH,
         model_type="mano",
         flat_hand_mean=True,
-        is_rhand=True,
+        is_rhand=args.use_right_hand,
         use_pca=False,
         batch_size=num_frames_hand,
     )

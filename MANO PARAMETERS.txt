@@ -1,0 +1,8 @@
+MANO PARAMETERS
+- shape: 10 values defining how the hand looks anatomically (length of fingers, shape of palm, etc.)
+- betas: 45 values defining rotations of each joint (x,y,z rotations for each of the 15 joints including root of the hand)
+
+GETTING OUTPUT
+- define hand_params as a dict (global orient, transl, hand_pose, betas)
+- retrieve the output using >> smplx_output = smplx_model(**hand_parms)
+- read the joints and vertices at index [0] respectively from the output tensor

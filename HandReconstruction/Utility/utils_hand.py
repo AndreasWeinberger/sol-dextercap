@@ -360,11 +360,11 @@ def dof_to_rot_vector(
         parent = parent_index[i]
 
         if i == 0 or dof[i - 1] == 3:
-            angles = dof_value[:, value_idx : value_idx + 3]
+            angles = dof_value[:, value_idx: value_idx + 3]
             rot_mat = euler_angles_to_matrix(angles, "XYZ")
             value_idx += 3
         elif dof[i - 1] == 1:
-            z_angle = dof_value[:, value_idx : value_idx + 1]
+            z_angle = dof_value[:, value_idx: value_idx + 1]
             rot_mat = euler_angles_to_matrix(
                 torch.cat(
                     [torch.zeros_like(z_angle), torch.zeros_like(z_angle), z_angle],
@@ -374,8 +374,8 @@ def dof_to_rot_vector(
             )
             value_idx += 1
         elif dof[i - 1] == 2:
-            y_angle = dof_value[:, value_idx : value_idx + 1]
-            z_angle = dof_value[:, value_idx + 1 : value_idx + 2]
+            y_angle = dof_value[:, value_idx: value_idx + 1]
+            z_angle = dof_value[:, value_idx + 1: value_idx + 2]
             rot_mat = euler_angles_to_matrix(
                 torch.cat([torch.zeros_like(y_angle), y_angle, z_angle], dim=1), "XYZ"
             )
@@ -535,3 +535,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    input('Press key to exit')

@@ -401,6 +401,7 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
 
                 frame = skimage.io.imread(fn)
 
+                # f'{output}_markers.mp4'
                 all_markers, ffmpeg_process = process_frame(id_img, frame, f'{output}_markers.mp4', all_markers, ffmpeg_process)
                 count += 1
 

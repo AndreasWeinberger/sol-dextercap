@@ -1,0 +1,18 @@
+PREPARATION
+- Pattern Gen
+- Patches
+- Annotation
+
+MODELS (Train & Test)
+- CONV
+- EDGE
+- BLOCK
+
+PROCESSING
+- Refinement
+- Triangulation
+- Post Processing
+
+RECONSTRUCTION
+- Hand Reconstruction
+- Object Reconstruction

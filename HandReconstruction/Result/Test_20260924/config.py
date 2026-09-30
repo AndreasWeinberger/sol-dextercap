@@ -58,7 +58,7 @@ data = {
 # Optimization related configuration
 optimize = {
     "test_mode": False,
-    "device": "cpu",
+    "device": "cuda",
     "use_shape_fitting": True,
     "learning_rate": 0.002,
     "end_effector_index": [3, 6, 9, 12, 15],
@@ -67,11 +67,11 @@ optimize = {
     # At least how many markers are needed on the back and palm of the hand to optimize the root node position and rotation?
     "min_marker_for_calibration": 1,
     # Number of frames for calibration
-    "num_frame_for_calibration": 5,
+    "num_frame_for_calibration": 10,
     # Number of iterations for calibration and optimization
     "num_iterations": 400,
     # Which frames are the frames where the hand reappears, representing that this frame and the previous frame are two action sequences. If all sequences are continuous, then index_init_frame = [0], if the 10th frame of the hand comes into the camera from outside, then index_init_frame = [0, 10]
-    "index_init_frame": [0, 0],
+    "index_init_frame": [0],
     # Number of iterations for the frames where the hand reappears
     "num_iterations_init_frame": 1000,
 }

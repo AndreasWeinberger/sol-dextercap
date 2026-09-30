@@ -7,7 +7,7 @@ import torch
 import torchvision.transforms.v2 as torch_trans
 import json
 
-from . import utils
+import utils
 import matplotlib.pyplot as plt
 import cv2
 import itertools
@@ -237,7 +237,7 @@ class MarkerDataset:
 
         if self.augment_image and self.augmenter is not None:
             with torch.no_grad():
-                img = self.augmenter.apply(torch.from_numpy(img).view(1, img.shape[0], img.shape[1]),self.debugging).numpy().reshape(img.shape)
+                img = self.augmenter.apply(torch.from_numpy(img).view(1, img.shape[0], img.shape[1]), self.debugging).numpy().reshape(img.shape)
 
         if self.train is not None and not self.train:
             trans, dst = utils.random_perspective(img.shape[1], img.shape[0])
@@ -920,7 +920,7 @@ def test_block(dataset_folder: str, dataset_file: str = "labels.json", count: in
     for i in range(count):
         block, (out_label_0, out_label_1, out_dir) = dataset[i]
         dir_idx = np.nonzero(out_dir.numpy().flatten())[0][0]
-        un_rotate = torch.rot90(block, k=dir_idx, dims=[1, 2]).numpy()[0]
+        un_rotate = torch.rot90(block, k=dir_idx, dims=[1, 2])[0]
 
         if debug:
             print('label0: ', out_label_0)
