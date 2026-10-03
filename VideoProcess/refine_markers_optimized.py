@@ -123,15 +123,15 @@ def main():
     # args = parser.parse_args()
 
     start_frame = 0
-    end_frame = 9
+    end_frame = 99
     workers = 12
-
-    t_global = time.time()
+    chunk_size = 92
 
     markers_chunks_folder = "./Out/synth_01/markers/"
     _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
 
     all_markers = []
+
 
     for file in markers_chunks_files:
         import json
@@ -151,9 +151,12 @@ def main():
         _, f = utils.folder_contents(os.path.join(input_folder, cam))
         image_files.extend(f[start_frame:end_frame+1])
 
+    assert len(all_markers) == len(image_files), f"Got {len(all_markers)} frames ({len(markers_chunks_files)} chunks) but {len(image_files)} image files. They need to be equal length!"
+
     output = "./Out/synth_01/refined_markers/"
 
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
+        t_global = time.time()
         print(f'> Start refine markers...')
         t_refine_markers = time.time()
         for frame_idx, refined_markers, refined_blocks, refined_bock_labels in executor.map(process_frame, [[frame_idx,image_files[frame_idx], all_markers[frame_idx]] for frame_idx in range(len(all_markers))]):
@@ -172,7 +175,7 @@ def main():
                 f.write(json_string)
 
     t_global = time.time() - t_global
-    print(f'> Total time for refine markers: {t_global:.02f}s (Avg {(t_global / (len(all_markers))):.02f}s per frame ({len(all_markers)} frames))')
+    print(f'>>> Processed [{len(markers_chunks_files)}/{len(markers_chunks_files)}] chunks in {t_global:.02f}s (Avg: {(t_global / (len(all_markers))):.02f}s) | Frames [{start_frame}-{end_frame}] | Total [{len(all_markers)}] <<<')
 
 if __name__ == '__main__':
     main()

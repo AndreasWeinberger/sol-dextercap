@@ -22,7 +22,9 @@ import argparse
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
-
+    torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
+    torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
+    
     # args
     parser = argparse.ArgumentParser()
     parser.add_argument('--labels', default=None, type=str, required=True, help='Path to the labels.json file containing "image" fields and annotated data')
@@ -40,12 +42,12 @@ if __name__ == "__main__":
 
     train_loader = DataLoader(
         EdgeDataset(args.dataset_folder, args.labels, size=128*500, train=True, augment_image=args.augment),
-        batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0
+        batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     val_loader = DataLoader(
         EdgeDataset(args.dataset_folder, args.labels, size=1280, train=False, augment_image=False),
-        batch_size=args.batch_size, shuffle=False, num_workers=int(args.num_workers / 2), persistent_workers=args.num_workers > 0
+        batch_size=args.batch_size, shuffle=False, num_workers=int(args.num_workers / 2), persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     model = EdgeNet().to(device)

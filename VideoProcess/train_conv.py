@@ -21,7 +21,9 @@ import argparse
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
-
+    torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
+    torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
+    
     # args
     parser = argparse.ArgumentParser()
     parser.add_argument('--labels', default=None, type=str, required=True, help='Path to the labels.json file containing "image" fields and annotated data')
@@ -39,20 +41,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    model = UNet(output_channel=2).to(device)
+    model = UNet(output_channel=1).to(device) # OUTPUT CHANNELS CHANGED FROM 2 TO 1 --> may yield better perf during inference
 
     args.dataset_folder, args.labels = os.path.split(args.labels)
 
     train_loader = DataLoader(
         MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=128*500, train=True, max_num_markers=args.max_num_markers, 
                       output_mask_image=True, output_line_mask_image=True, augment_image=args.augment), 
-        batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0
+        batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     val_loader = DataLoader(
         MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=1280, train=False, max_num_markers=args.max_num_markers, 
                       output_mask_image=True, output_line_mask_image=True, augment_image=False), 
-        batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, persistent_workers=args.num_workers > 0
+        batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     # Test model with 0.74% acc trained with eps 1e-7

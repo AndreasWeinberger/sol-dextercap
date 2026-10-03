@@ -15,6 +15,32 @@ import random
 
 import argparse
 
+def parse_blocks(markers, blocks):
+    markers = np.asarray(markers)
+    black_blocks = []
+    number_blocks = []
+    for blk in blocks:
+        corners = blk['corners']
+        label = blk['label']
+        direction = blk['direction']
+
+        marker_dist = scipy.spatial.distance_matrix(markers, corners)
+        marker_idx = np.argmin(marker_dist, axis=0)
+        corners = tuple(marker_idx.tolist())  # xy -> idx
+
+        blk_def = {
+            'corners': corners,
+            'corners_sorted': sorted(corners),
+            'label': label,
+            'direction': direction,
+        }
+
+        if label == '*':
+            black_blocks.append(blk_def)
+        else:
+            number_blocks.append(blk_def)
+
+    return black_blocks, number_blocks
 
 def load_data_1(dataset_folder):
     with open(os.path.join(dataset_folder, 'annotations', 'default.json'), 'r') as f:
@@ -40,6 +66,26 @@ def load_data_1(dataset_folder):
 
     return data
 
+def load_label_characters(dataset_folder, label_file):
+    with open(os.path.join(dataset_folder, label_file), 'r') as f:
+        data_json = json.load(f)
+
+    label_characters_0 = set()
+    label_characters_1 = set()
+    for item in data_json:
+
+        black_blocks, number_blocks = parse_blocks(item['keypoints'], item['blocks'])
+
+        for blk in itertools.chain(black_blocks, number_blocks):
+            label = blk['label']
+            if label != '*':
+                label_characters_0.add(label[0])
+                label_characters_1.add(label[1])
+
+    label_characters_0 = sorted(list(label_characters_0)) + ['*', '-']
+    label_characters_1 = sorted(list(label_characters_1)) + ['*', '-']
+
+    return label_characters_0, label_characters_1
 
 def load_data_mine(dataset_folder, label_file):
     with open(os.path.join(dataset_folder, label_file), 'r') as f:
@@ -57,33 +103,6 @@ def load_data_mine(dataset_folder, label_file):
                 data_json_new.extend(sub_data_json)
                 # print(fn, len(sub_data_json), len(data_json_new))
         data_json = data_json_new
-
-    def parse_blocks(markers, blocks):
-        markers = np.asarray(markers)
-        black_blocks = []
-        number_blocks = []
-        for blk in blocks:
-            corners = blk['corners']
-            label = blk['label']
-            direction = blk['direction']
-
-            marker_dist = scipy.spatial.distance_matrix(markers, corners)
-            marker_idx = np.argmin(marker_dist, axis=0)
-            corners = tuple(marker_idx.tolist())  # xy -> idx
-
-            blk_def = {
-                'corners': corners,
-                'corners_sorted': sorted(corners),
-                'label': label,
-                'direction': direction,
-            }
-
-            if label == '*':
-                black_blocks.append(blk_def)
-            else:
-                number_blocks.append(blk_def)
-
-        return black_blocks, number_blocks
 
     data = []
     label_characters_0 = set()
@@ -510,15 +529,93 @@ class BlackBlockIdentifyDataset:
 
         return block, output
 
+# SIMPLIFIED VERSION TO JUST LOAD THE LABEL CHARACTERS AND EXTRACT BLOCKS
+class BlockCodeDataset_Base:
+    def __init__(self, dataset_folder='add',dataset_file: str = 'labels.json',):
+        self.label_characters_0, self.label_characters_1 = load_label_characters(dataset_folder, dataset_file)
 
-class BlockCodeDataset:
+        self.block_size = 60
+        self.margin = 30
+        self.half_block_size = self.block_size // 2
+        self.safe_margin = self.half_block_size + self.margin + 1
+
+        self.point_distance_thr = 60
+
+        self.block_margin = 15
+        self.image_size = 64
+        self.image_margin = 10
+
+        self.augmenter = None
+        self.debugging = False
+
+    def extract_block(self, image: np.ndarray, corners: np.ndarray, do_augment: bool = False):
+        height, width = image.shape[:2]
+
+        margin = self.block_margin
+        xy_min = np.maximum(0, np.floor(corners.min(axis=0)).astype(int) - margin)
+        xy_max = np.minimum((width - 1, height - 1), np.ceil(corners.max(axis=0)).astype(int) + margin)
+        image_block = image[xy_min[1]:xy_max[1]+1, xy_min[0]:xy_max[0]+1]
+
+        if len(image_block) == 0:
+            xy_min, xy_max = fix_image_block(xy_min, xy_max, self.debugging)
+            image_block = image[xy_min[1]:xy_max[1]+1, xy_min[0]:xy_max[0]+1]
+
+        if image_block.shape[0] <= 2:
+            do_augment = False
+
+        if do_augment and self.augmenter is not None:
+            with torch.no_grad():
+                image_block = self.augmenter.apply(torch.from_numpy(image_block).view(1, image_block.shape[0], image_block.shape[1]), self.debugging).numpy().reshape(image_block.shape)
+
+        # Set up the destination points for the perspective transform
+        blk_min = self.image_margin
+        blk_max = self.image_size - self.image_margin
+        dst = np.array([
+            [blk_min, blk_min],
+            [blk_max - 1, blk_min],
+            [blk_max - 1, blk_max - 1],
+            [blk_min, blk_max - 1]], dtype=np.float32)
+
+        # Calculate the perspective transform matrix and apply it
+        M = cv2.getPerspectiveTransform((corners - xy_min).astype(np.float32).reshape(-1, 2), dst)
+        # wrapped = cv2.warpPerspective(image_block.swapaxes(0,1), M, (self.image_size, self.image_size), flags=cv2.INTER_NEAREST).swapaxes(0,1)
+        wrapped = cv2.warpPerspective(image_block, M, (self.image_size, self.image_size), flags=cv2.INTER_NEAREST)
+
+        return wrapped
+
+    def code_index(self, label: str, label_2: str | None = None):
+        if label is None or len(label) == 0:
+            return -1
+
+        if label_2 is None and len(label) < 2:
+            return -1
+
+        if label[0] == '*':
+            return -2
+
+        if label[0] == '-':
+            return -3
+
+        label_1 = label[0]
+        if label_2 is None:
+            label_2 = label[1]
+
+        try:
+            idx_1 = self.label_characters_0.index(label_1)
+            idx_2 = self.label_characters_1.index(label_2)
+        except IndexError:
+            return -1
+
+        return idx_1*(len(self.label_characters_1)-2) + idx_2
+    
+class BlockCodeDataset(BlockCodeDataset_Base):
     def __init__(self, dataset_folder='add',
                  dataset_file: str = 'labels.json',
                  size=12800,
                  train=None,
                  augment_image=False,
                  debugging=None
-                 ):
+                 ): 
         # self.data = load_data_1(dataset_folder)
         self.data, self.label_characters_0, self.label_characters_1 = load_data_mine(dataset_folder, dataset_file)
 
@@ -652,67 +749,6 @@ class BlockCodeDataset:
         out_dir[block_dir] = 1
 
         return block, (out_label_0, out_label_1, out_dir)
-
-    def extract_block(self, image: np.ndarray, corners: np.ndarray, do_augment: bool = False):
-        height, width = image.shape[:2]
-
-        margin = self.block_margin
-        xy_min = np.maximum(0, np.floor(corners.min(axis=0)).astype(int) - margin)
-        xy_max = np.minimum((width - 1, height - 1), np.ceil(corners.max(axis=0)).astype(int) + margin)
-        image_block = image[xy_min[1]:xy_max[1]+1, xy_min[0]:xy_max[0]+1]
-
-        if len(image_block) == 0:
-            xy_min, xy_max = fix_image_block(xy_min, xy_max, self.debugging)
-            image_block = image[xy_min[1]:xy_max[1]+1, xy_min[0]:xy_max[0]+1]
-
-        if image_block.shape[0] <= 2:
-            do_augment = False
-
-        if do_augment and self.augmenter is not None:
-            with torch.no_grad():
-                image_block = self.augmenter.apply(torch.from_numpy(image_block).view(1, image_block.shape[0], image_block.shape[1]), self.debugging).numpy().reshape(image_block.shape)
-
-        # Set up the destination points for the perspective transform
-        blk_min = self.image_margin
-        blk_max = self.image_size - self.image_margin
-        dst = np.array([
-            [blk_min, blk_min],
-            [blk_max - 1, blk_min],
-            [blk_max - 1, blk_max - 1],
-            [blk_min, blk_max - 1]], dtype=np.float32)
-
-        # Calculate the perspective transform matrix and apply it
-        M = cv2.getPerspectiveTransform((corners - xy_min).astype(np.float32).reshape(-1, 2), dst)
-        # wrapped = cv2.warpPerspective(image_block.swapaxes(0,1), M, (self.image_size, self.image_size), flags=cv2.INTER_NEAREST).swapaxes(0,1)
-        wrapped = cv2.warpPerspective(image_block, M, (self.image_size, self.image_size), flags=cv2.INTER_NEAREST)
-
-        return wrapped
-
-    def code_index(self, label: str, label_2: str | None = None):
-        if label is None or len(label) == 0:
-            return -1
-
-        if label_2 is None and len(label) < 2:
-            return -1
-
-        if label[0] == '*':
-            return -2
-
-        if label[0] == '-':
-            return -3
-
-        label_1 = label[0]
-        if label_2 is None:
-            label_2 = label[1]
-
-        try:
-            idx_1 = self.label_characters_0.index(label_1)
-            idx_2 = self.label_characters_1.index(label_2)
-        except IndexError:
-            return -1
-
-        return idx_1*(len(self.label_characters_1)-2) + idx_2
-
 
 class EdgeDataset:
     def __init__(self, dataset_folder='add', dataset_file: str = 'labels.json',

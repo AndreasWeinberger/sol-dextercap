@@ -23,6 +23,8 @@ import argparse
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
+    torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
+    torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
 
     # args
     parser = argparse.ArgumentParser()
@@ -41,11 +43,11 @@ if __name__ == "__main__":
 
     dataset = BlockCodeDataset(args.dataset_folder, args.labels, size=128*500, train=True, augment_image=args.augment, debugging=args.debug)
 
-    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0)
+    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0, pin_memory=True)
 
     val_loader = DataLoader(
         BlockCodeDataset(args.dataset_folder, args.labels, size=1280, train=False, augment_image=False, debugging=args.debug),
-        batch_size=args.batch_size, shuffle=False, num_workers=int(args.num_workers / 2), persistent_workers=args.num_workers > 0
+        batch_size=args.batch_size, shuffle=False, num_workers=int(args.num_workers / 2), persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     model = BlockNet(label0_chars=len(dataset.label_characters_0), label1_chars=len(dataset.label_characters_1), blk_dirs=5).to(device)
