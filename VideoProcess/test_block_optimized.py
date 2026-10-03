@@ -14,6 +14,7 @@ import time
 
 import concurrent.futures
 
+import json
 
 def draw_block_code(image: np.ndarray, markers: np.ndarray, blocks: np.ndarray, label_0_char, label_1_char, blk_dir, wrap_text: bool, label_confidence_thr: float = 0.5):
     for blk_idx, blk in enumerate(blocks):
@@ -155,16 +156,16 @@ def draw_block_corners(image: np.ndarray, markers: np.ndarray, blocks: np.ndarra
 @torch.no_grad()
 def process_block_inference(frame_idx: int, blk_imgs: torch.Tensor, block_model: nn.Module, label_characters_0: list, label_characters_1: list):
 
-    t_start = time.time()
+    # t_start = time.time()
 
     label_0, label_1, blk_dir = block_model(blk_imgs)
     label_0 = torch.softmax(label_0, dim=-1)
     label_1 = torch.softmax(label_1, dim=-1)
     blk_dir = torch.softmax(blk_dir, dim=-1)
 
-    label_0 = label_0.float().cpu().numpy()
-    label_1 = label_1.float().cpu().numpy()
-    blk_dir = blk_dir.float().cpu().numpy()
+    label_0 = label_0.cpu().numpy()
+    label_1 = label_1.cpu().numpy()
+    blk_dir = blk_dir.cpu().numpy()
 
     label_0_idx = np.argmax(label_0, axis=-1)
     label_1_idx = np.argmax(label_1, axis=-1)
@@ -179,14 +180,14 @@ def process_block_inference(frame_idx: int, blk_imgs: torch.Tensor, block_model:
     del blk_dir
     torch.cuda.empty_cache()
 
-    print(f'\t> Frame: {frame_idx} | Block inference took {(time.time() - t_start):.02f}s')
+    # print(f'\t> Frame: {frame_idx} | Block inference took {(time.time() - t_start):.02f}s')
 
     return label_0_char, label_1_char, blk_dir_idx
 
 
 def process_block_labels(frame_idx, blocks, label_0_char, label_1_char, blk_dir):
 
-    t_start = time.time()
+    # t_start = time.time()
 
     block_labels = []
     for blk_idx, blk in enumerate(blocks):
@@ -198,20 +199,20 @@ def process_block_labels(frame_idx, blocks, label_0_char, label_1_char, blk_dir)
         block_labels.append({'label': label, 'label_confidence': float(label_confidence),
                              'direction': int(direction), 'dir_confidence': float(dir_confidence)})
 
-    print(f'\t> Frame {frame_idx} | Process block labels took {(time.time() - t_start):.2f}s')
+    # print(f'\t> Frame {frame_idx} | Process block labels took {(time.time() - t_start):.2f}s')
 
     return frame_idx, block_labels
 
 @torch.inference_mode()
 @torch.no_grad()
-def prepare_blk_imgs(frame_idx: int, fn: str, refined_markers: list, dataset: BlockCodeDataset_Base, device):
-    t_start = time.time()
+def prepare_blk_imgs(frame_idx: int, fn: str, all_markers: list, dataset: BlockCodeDataset_Base, device):
+    # t_start = time.time()
 
     frame = skimage.io.imread(fn)
     frame = skimage.color.rgb2gray(frame)
 
-    markers = np.asarray(refined_markers['checked_markers'])
-    blocks = np.asarray([blk[1] for blk in refined_markers['blocks']])  # [block_num, 4]
+    markers = np.asarray(all_markers['checked_markers'])
+    blocks = np.asarray([blk[1] for blk in all_markers['blocks']])  # [block_num, 4]
 
     if len(blocks) == 0:
         return (frame_idx, [])
@@ -224,11 +225,11 @@ def prepare_blk_imgs(frame_idx: int, fn: str, refined_markers: list, dataset: Bl
 
     blk_imgs = np.stack(blk_imgs, axis=0).reshape(-1, 1, dataset.image_size, dataset.image_size)
 
-    blk_imgs = np.resize(blk_imgs, (300, blk_imgs.shape[1], blk_imgs.shape[2], blk_imgs.shape[3]))  # consistent shape for CUDA graph compile of block model
+    # blk_imgs = np.resize(blk_imgs, (300, blk_imgs.shape[1], blk_imgs.shape[2], blk_imgs.shape[3]))  # consistent shape for CUDA graph compile of block model
 
-    blk_imgs = torch.from_numpy(blk_imgs).bfloat16().to(device)
+    blk_imgs = torch.from_numpy(blk_imgs).to(device)
 
-    print(f'\t> Frame: {frame_idx} | Prepare block imgs took {(time.time() - t_start):.2f}s')
+    # print(f'\t> Frame: {frame_idx} | Prepare block imgs took {(time.time() - t_start):.2f}s')
 
     return frame_idx, blk_imgs, len(blocks)
 
@@ -263,7 +264,7 @@ def main():
     start_frame = 0
     end_frame = 99
     workers = 6
-    chunk_size = 32
+    chunk_size = 92
 
     labels = "./Data/synth_01/dataset/train/labels.json"
     dataset_folder, labels = os.path.split(labels)
@@ -271,7 +272,7 @@ def main():
 
     block_model = BlockNet(label0_chars=len(dataset.label_characters_0), label1_chars=len(dataset.label_characters_1), blk_dirs=5).to(device)
     block_model.load_state_dict(torch.load("./ckpts/0005/block/best_lr_0.001_bs_512_model_156_f1_score=0.9857.pt", weights_only=True, map_location=device))
-    block_model.to(dtype=torch.bfloat16)
+    block_model.to(dtype=torch.float32)
 
     # block_model.eval()
 
@@ -282,17 +283,14 @@ def main():
     #     mode="reduce-overhead"
     # )
 
-    import json
-    with open(os.path.join("./Out/synth_01/refined_markers/", os.listdir("./Out/synth_01/refined_markers/")[0])) as f:
-        refined_markers = json.load(f)
+    markers_chunks_folder = "./Out/synth_01/markers/"
+    _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
 
     input_folder = "./Blender/renders/cameras/"
     all_files = []
     for cam in os.listdir(input_folder):
         _, f = utils.folder_contents(os.path.join(input_folder, cam))
         all_files.extend(f[start_frame:end_frame+1])
-
-    assert len(refined_markers) == len(all_files), f"Got {len(refined_markers)} frames in refined_markers.json but {len(all_files)} files. They need to be equal length!"
 
     output = "./Out/synth_01/block_labels/"
 
@@ -301,7 +299,7 @@ def main():
 
     all_blocks_count = 0
 
-    print(f'>>> Setup took {(time.time() - t_global):.02f}s')
+    print(f'>>> Setup took {(time.time() - t_global):.02f}s <<<')
 
     print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
@@ -309,7 +307,7 @@ def main():
         #     executor.submit(time.sleep, .1)
 
         for c in range(start_chunk, chunks + 1, 1):
-
+            
             futures = []
 
             t_chunk = time.time()
@@ -320,10 +318,13 @@ def main():
 
             chunk_blocks_count = 0
 
+            with open(markers_chunks_files[c-1]) as f:
+                all_markers = json.load(f)
+
             def done_block_labels(future):
                 frame_idx, block_labels = future.result()
 
-                refined_markers[frame_idx]['block_labels'] = block_labels
+                all_markers[frame_idx]['block_labels'] = block_labels
 
             def done_prepare_blk_imgs(future):
                 frame_idx, blk_imgs, blocks_count = future.result()
@@ -335,84 +336,87 @@ def main():
 
                 label_0_char, label_1_char, blk_dir_idx = process_block_inference(frame_idx, blk_imgs, block_model, dataset.label_characters_0, dataset.label_characters_1)
 
-                fut = executor.submit(process_block_labels, frame_idx, refined_markers[frame_idx]['blocks'], label_0_char, label_1_char, blk_dir_idx)
+                fut = executor.submit(process_block_labels, frame_idx, all_markers[frame_idx]['blocks'], label_0_char, label_1_char, blk_dir_idx)
                 fut.add_done_callback(done_block_labels)
                 futures.append(fut)
 
             for i in range(len(c_files)):
-                fut = executor.submit(prepare_blk_imgs, i, c_files[i], refined_markers[i], dataset, device)
+                fut = executor.submit(prepare_blk_imgs, i, c_files[i], all_markers[i], dataset, device)
                 fut.add_done_callback(done_prepare_blk_imgs)
                 futures.append(fut)
 
             for f in futures:
                 f.result()
 
+            torch.cuda.empty_cache()
+            
             if output:
                 os.makedirs(output, exist_ok=True)
-                import json
                 fn = os.path.join(output, f'block_labels_chunk_{utils.leading_zeros(c,4)}_frames_[{c_first_frame}-{c_last_frame}].json')
                 with open(fn, 'w+', 1) as f:
-                    json_string = json.dumps(refined_markers, separators=(',', ":"))  # Compact JSON structure
+                    json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
                     f.write(json_string)
 
-                # print(f'>>> Start render video...')
-                # t_video = time.time()
-                # vid_path = os.path.join(output, f'block_labels_[{len(refined_markers)}].mp4')
-                # ffmpeg_process = None
+            #     print(f'>>> Start render video...')
+            #     t_video = time.time()
+            #     vid_path = os.path.join(output, f'block_labels_[{len(all_markers)}].mp4')
+            #     ffmpeg_process = None
 
-                # all_marker_pos = np.concatenate([frame['checked_markers'] for frame in refined_markers if len(frame['checked_markers']) > 0], axis=0)
-                # roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 10) // 2 * 2
-                # roi_max = (np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int)) // 2 * 2 + 10
+            #     all_marker_pos = np.concatenate([frame['checked_markers'] for frame in all_markers if len(frame['checked_markers']) > 0], axis=0)
+            #     roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 10) // 2 * 2
+            #     roi_max = (np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int)) // 2 * 2 + 10
+ 
+            #     for i, frame in enumerate(frame):
+            #         frame = (frame*255).astype(np.uint8)
+            #         frame_marker = frame.copy()
+            #         frame1_marker = frame.copy()
+            #         frame1_marker_black = np.zeros_like(frame)
+            #         frame2_marker = frame.copy()
 
-                # for i, frame in enumerate(frames):
-                #     frame = (frame*255).astype(np.uint8)
-                #     frame_marker = frame.copy()
-                #     frame1_marker = frame.copy()
-                #     frame1_marker_black = np.zeros_like(frame)
-                #     frame2_marker = frame.copy()
+            #         markers = np.asarray(all_markers[i]['checked_markers'])
+            #         blocks = np.asarray([blk[1] for blk in all_markers[i]['blocks']])
 
-                #     markers = np.asarray(refined_markers[i]['checked_markers'])
-                #     blocks = np.asarray([blk[1] for blk in refined_markers[i]['blocks']])
+            #         draw_block_code(frame1_marker, markers, blocks, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i], wrap_text=False, label_confidence_thr=0.0)
+            #         draw_block_code(frame1_marker_black, markers, blocks, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i], wrap_text=True, label_confidence_thr=0.0)
+            #         draw_block_corners(frame2_marker, markers, blocks, dataset, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i])
 
-                #     draw_block_code(frame1_marker, markers, blocks, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i], wrap_text=False, label_confidence_thr=0.0)
-                #     draw_block_code(frame1_marker_black, markers, blocks, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i], wrap_text=True, label_confidence_thr=0.0)
-                #     draw_block_corners(frame2_marker, markers, blocks, dataset, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i])
+            #         block_pts = [markers[block_indices].reshape(-1, 1, 2) for block_indices in blocks]
+            #         cv2.polylines(frame_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+            #         cv2.polylines(frame1_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+            #         cv2.polylines(frame1_marker_black, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+            #         cv2.polylines(frame2_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
 
-                #     block_pts = [markers[block_indices].reshape(-1, 1, 2) for block_indices in blocks]
-                #     cv2.polylines(frame_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
-                #     cv2.polylines(frame1_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
-                #     cv2.polylines(frame1_marker_black, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
-                #     cv2.polylines(frame2_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+            #         frame_marker = utils.draw_markers(frame_marker, markers, color=255)
+            #         frame1_marker = utils.draw_markers(frame1_marker, markers, color=255)
+            #         frame1_marker_black = utils.draw_markers(frame1_marker_black, markers, color=255)
 
-                #     frame_marker = utils.draw_markers(frame_marker, markers, color=255)
-                #     frame1_marker = utils.draw_markers(frame1_marker, markers, color=255)
-                #     frame1_marker_black = utils.draw_markers(frame1_marker_black, markers, color=255)
+            #         frame_marker = np.concatenate((
+            #             frame_marker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
+            #             frame1_marker_black[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
+            #         ), axis=1)
 
-                #     frame_marker = np.concatenate((
-                #         frame_marker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
-                #         frame1_marker_black[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
-                #     ), axis=1)
+            #         frame_marker = skimage.color.gray2rgb((frame_marker/255).astype(np.float64))
 
-                #     frame_marker = skimage.color.gray2rgb((frame_marker/255).astype(np.float64))
+            #         out_img = (frame_marker*255).astype(np.uint8)
 
-                #     out_img = (frame_marker*255).astype(np.uint8)
+            #         if ffmpeg_process is None:
+            #             import ffmpeg
+            #             ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}').output(
+            #                 vid_path, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
+            #         ffmpeg_process.stdin.write(out_img)
 
-                #     if ffmpeg_process is None:
-                #         import ffmpeg
-                #         ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}').output(
-                #             vid_path, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
-                #     ffmpeg_process.stdin.write(out_img)
-
-                # if ffmpeg_process is not None:
-                #     ffmpeg_process.stdin.close()
-                #     ffmpeg_process.wait()
-                #     print(f'> Render video took {(time.time() - t_video):.02f}s | Output path: "{vid_path}"')
+            #     if ffmpeg_process is not None:
+            #         ffmpeg_process.stdin.close()
+            #         ffmpeg_process.wait()
+            #         print(f'> Render video took {(time.time() - t_video):.02f}s | Output path: "{vid_path}"')
 
             t_chunk = time.time() - t_chunk
-            print(f'> Chunk [{c}/{chunks}] | Time: {t_chunk:.02f}s (Avg: {(t_chunk / (len(c_files))):.02f}s / frame) | Blocks: {chunk_blocks_count} (Avg: {(chunk_blocks_count / (len(c_files))):.02f} / frame) | Frames: {len(c_files)} (Range: [{c_first_frame}-{c_last_frame}] / camera) <')
+            print(f'> Chunk [{c}/{chunks}] | Time: {t_chunk:.02f}s (Avg: {(t_chunk / (len(c_files))):.02f}s / frame) | Blocks: {chunk_blocks_count} (Avg: {(chunk_blocks_count / (len(c_files))):.02f} / frame) | Frames: {len(c_files)} (Cam range: [{c_first_frame}-{c_last_frame}]) <')
+
+    torch.cuda.empty_cache()
 
     t_global = time.time() - t_global
-    print(f'>>> Processed [{c}/{chunks}] chunks | Time: {t_global:.02f}s (Avg: {(t_global / (len(refined_markers))):.02f}s / frame) | Blocks: {all_blocks_count} (Avg: {(all_blocks_count / (len(refined_markers))):.02f} / frame) | Frames: {len(all_files)} (Range: [{start_frame}-{end_frame}] / camera) <<<')
+    print(f'>>> Processed [{c}/{chunks}] chunks | Time: {t_global:.02f}s (Avg: {(t_global / (len(all_markers))):.02f}s / frame) | Blocks: {all_blocks_count} (Avg: {(all_blocks_count / (len(all_markers))):.02f} / frame) | Frames: {len(all_files)} (Cam range: [{start_frame}-{end_frame}]) <<<')
 
 
 if __name__ == '__main__':

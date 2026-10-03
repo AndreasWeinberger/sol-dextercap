@@ -11,6 +11,7 @@ import time
 
 from typing import Tuple
 import concurrent.futures
+import json
 
 
 def subpixel_refine(gray: np.ndarray, markers: np.ndarray, blocks: np.ndarray, *, win_size: Tuple[int, int] = (5, 5), zero_zone: Tuple[int, int] = (-1, -1), refine_iter: int = 2):
@@ -75,16 +76,15 @@ def subpixel_refine(gray: np.ndarray, markers: np.ndarray, blocks: np.ndarray, *
     return markers_subpixel, blocks_refined, removed_markers, removed_blocks
 
 
-def process_frame(x: list):
-    t_start = time.time()
-    idx, fn, m = x
+def process_frame(frame_idx: int, fn: str, all_markers:list):
+    # t_start = time.time()
 
     frame = skimage.io.imread(fn)
     gray = skimage.color.rgb2gray(frame)
 
-    markers = np.asarray(m['checked_markers'])
-    blocks = np.asarray([blk[1] for blk in m['blocks']])
-    block_labels = m.get('block_labels', None)
+    markers = np.asarray(all_markers['checked_markers'])
+    blocks = np.asarray([blk[1] for blk in all_markers['blocks']])
+    block_labels = all_markers.get('block_labels', None)
     assert block_labels is None or len(block_labels) == len(blocks)
 
     markers_subpixel, blocks_refined, removed_markers, removed_blocks = subpixel_refine(gray, markers, blocks)
@@ -104,9 +104,9 @@ def process_frame(x: list):
     if block_labels_refined is not None:
         refined_bock_labels = block_labels_refined
 
-    print(f'\t> Refine markers took {time.time() - t_start:.02f}s')
+    # print(f'\t> Refine markers [{frame_idx}] | Time: {time.time() - t_start:.02f}s')
 
-    return idx, refined_markers, refined_blocks, refined_bock_labels
+    return frame_idx, refined_markers, refined_blocks, refined_bock_labels
 
 
 def main():
@@ -122,60 +122,74 @@ def main():
 
     # args = parser.parse_args()
 
+    t_global = time.time()
+
     start_frame = 0
     end_frame = 99
     workers = 12
     chunk_size = 92
 
-    markers_chunks_folder = "./Out/synth_01/markers/"
+    markers_chunks_folder = "./Out/synth_01/block_labels/"
     _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
 
-    all_markers = []
-
-
-    for file in markers_chunks_files:
-        import json
-        with open(file) as f:
-            chunk = json.load(f)
-            for frame_idx in range(len(chunk['chunk_markers'])):
-                all_markers.append({
-                    "markers": chunk['chunk_markers'][frame_idx],
-                    "confidence": chunk['chunk_confidence'][frame_idx],
-                    "checked_markers": chunk['chunk_checked_markers'][frame_idx],
-                    "blocks": chunk['chunk_blocks'][frame_idx],
-                })
-
     input_folder = "./Blender/renders/cameras/"
-    image_files = []
-    for cam in os.listdir(input_folder):
-        _, f = utils.folder_contents(os.path.join(input_folder, cam))
-        image_files.extend(f[start_frame:end_frame+1])
-
-    assert len(all_markers) == len(image_files), f"Got {len(all_markers)} frames ({len(markers_chunks_files)} chunks) but {len(image_files)} image files. They need to be equal length!"
+    input = "./Blender/renders/cameras/"
+    all_files = []
+    for cam in os.listdir(input):
+        _, folder_files = utils.folder_contents(os.path.join(input, cam))
+        all_files.extend(folder_files[start_frame:end_frame+1])
 
     output = "./Out/synth_01/refined_markers/"
 
-    with concurrent.futures.ProcessPoolExecutor(workers) as executor:
-        t_global = time.time()
-        print(f'> Start refine markers...')
-        t_refine_markers = time.time()
-        for frame_idx, refined_markers, refined_blocks, refined_bock_labels in executor.map(process_frame, [[frame_idx,image_files[frame_idx], all_markers[frame_idx]] for frame_idx in range(len(all_markers))]):
-            all_markers[frame_idx]['refined_markers'] = refined_markers
-            all_markers[frame_idx]['refined_blocks'] = refined_blocks
-            all_markers[frame_idx]['refined_bock_labels'] = refined_bock_labels
-        t_refine_markers = time.time() - t_refine_markers
-        print(f'> Process refine markers took {t_refine_markers:.02f}s (Avg {(t_refine_markers / len(all_markers)):.02f}s per frame ({len(all_markers)} frames))')
+    chunks = int(len(all_files) / chunk_size) + 1
+    start_chunk = int(start_frame / chunk_size)+1
 
-        if output:
-            os.makedirs(output, exist_ok=True)
-            import json
-            fn = os.path.join(output, f'refined_markers_[{len(all_markers)}].json')
-            with open(fn, 'w+', 1) as f:
-                json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
-                f.write(json_string)
+    print(f'>>> Setup took {(time.time() - t_global):.02f}s')
+
+    print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
+    with concurrent.futures.ProcessPoolExecutor(workers) as executor:
+        for c in range(start_chunk, chunks + 1, 1):
+
+            # print(f'> Starting chunk [{c}/{chunks}] | Frames [{start_frame}-{end_frame}] | Total [{len(files)}]')
+            t_chunk = time.time()
+
+            c_first_frame = (c-1)*chunk_size
+            c_last_frame = min(len(all_files), c*chunk_size)-1
+            c_files = all_files[c_first_frame:c_last_frame+1]
+
+            with open(markers_chunks_files[c-1]) as f:
+                all_markers = json.load(f)
+
+            def done_refine_markers(future):
+                frame_idx, refined_markers, refined_blocks, refined_bock_labels = future.result()
+
+                all_markers[frame_idx]['refined_markers'] = refined_markers
+                all_markers[frame_idx]['refined_blocks'] = refined_blocks
+                all_markers[frame_idx]['refined_bock_labels'] = refined_bock_labels
+
+            futures = []
+
+            for frame_idx in range(len(c_files)):
+                fut = executor.submit(process_frame, frame_idx, c_files[frame_idx], all_markers[frame_idx])
+                fut.add_done_callback(done_refine_markers)
+                futures.append(fut)
+
+            for f in futures:
+                f.result()
+
+            if output:
+                os.makedirs(output, exist_ok=True)
+                fn = os.path.join(output, f'refined_markers_chunk_{utils.leading_zeros(c,4)}_frames_[{c_first_frame}-{c_last_frame}].json')
+                with open(fn, 'w+', 1) as f:
+                    json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+                    f.write(json_string)
+
+            t_chunk = time.time() - t_chunk
+            print(f'> Chunk [{c}/{chunks}] | Time: {t_chunk:.02f}s (Avg {(t_chunk / len(all_markers)):.02f}s / frame) | Frames: {len(c_files)} (Chunk range: [{c_first_frame}-{c_last_frame}])')
 
     t_global = time.time() - t_global
-    print(f'>>> Processed [{len(markers_chunks_files)}/{len(markers_chunks_files)}] chunks in {t_global:.02f}s (Avg: {(t_global / (len(all_markers))):.02f}s) | Frames [{start_frame}-{end_frame}] | Total [{len(all_markers)}] <<<')
+    print(f'>>> Processed [{c}/{chunks}] chunks | Time: {t_global:.02f}s (Avg: {(t_global / (len(all_files))):.02f}s) | Frames: {len(all_files)} (Cam range: [{start_frame}-{end_frame}] <<<')
+
 
 if __name__ == '__main__':
     main()

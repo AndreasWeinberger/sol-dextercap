@@ -388,6 +388,8 @@ def process_block_candidates(frame_idx, markers, edge_pts, edge_pred, edge_confi
 
 @torch.no_grad()
 def main():
+    t_global = time.time()
+
     device = torch.device(f"cuda:0" if torch.cuda.is_available() else "cpu")
 
     torch.set_default_dtype(torch.bfloat16)
@@ -419,42 +421,54 @@ def main():
         mode="reduce-overhead"
     )
 
-    start_frame = 0
-    end_frame = 99
-    workers = 8
-    chunk_size = 92
+    start_frame = 10                                   # when chunks_from_camera_ids is True, this counts for each camera
+    end_frame = 29                                     # when chunks_from_camera_ids is True, this counts for each camera
+    workers = 8                                         # for the ProcessPoolExecutor(), betw. 6-12 is recommended
+    chunk_size = 92                                     # ignored when chunks_from_camera_ids = True
+    chunks_from_camera_ids = True
+    camera_ids = (3,6,9)
 
-    block_size = 128  # betw. 64-256 --> 128 performs best with 0.60s / frame w/o check_half
-    stride = 64       # half of block_size for overlapping patches in conv inference
+    block_size = 128                                    # betw. 64-256 --> 128 performs best with 0.60s / frame w/o check_half on conv inference
+    stride = 64                                         # half of block_size for overlapping patches in conv inference
 
     marker_distance_thr = 65
     marker_confidence_thr = 0.6
     edge_confidence_thr = 0.6
-    check_half = False  # very slow on the edge inference
-
-    t_global = time.time()
+    check_half = False                                  # process conv model on half resolution images --> slower, but may be more robust
 
     input = "./Blender/renders/cameras/"
-    files = []
-    for cam in listdir(input):
-        _, folder_files = utils.folder_contents(join(input, cam))
-        files.extend(folder_files[start_frame:end_frame+1])
+    output = "./Out/synth_02/markers/"
+    if output:
+        makedirs(output, exist_ok=True)
 
-    output = "./Out/synth_01/markers/"
-    # output = None
-
-    chunks = int(len(files) / chunk_size) + 1
-    start_chunk = int(start_frame / chunk_size)+1
+    if chunks_from_camera_ids:
+        cameras = listdir(input)
+        chunks = camera_ids
+        chunk_size = end_frame-start_frame
+        all_files = [[] for _ in range(max(chunks)+1)]
+        for idx in chunks:
+            _, folder_files = utils.folder_contents(join(input, cameras[idx]))
+            all_files[idx].extend(folder_files[start_frame:end_frame+1])
+    else:
+        chunks = tuple(i for i in range(int((end_frame-start_frame) / chunk_size)) if i in camera_ids)
+        _, folder_files = utils.folder_contents(input, recursive=True)
+        all_files = folder_files[start_frame:min(len(folder_files),end_frame)]
 
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
         print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
-        for c in range(start_chunk, chunks + 1, 1):
-            print(f'>>> Starting chunk [{c}/{chunks}] | Frames [{start_frame}-{end_frame}] | Total [{len(files)}] <<<')
+        for c in chunks:
+            # print(f'>>> Starting chunk [{c}/{chunks}] | Frames [{start_frame}-{end_frame}] | Total [{len(files)}] <<<')
             t_chunk = time.time()
 
-            c_first_frame = (c-1)*chunk_size
-            c_last_frame = min(len(files), c*chunk_size)-1
-            c_files = files[c_first_frame:c_last_frame+1]
+            if chunks_from_camera_ids:
+                c_first_frame = start_frame
+                c_last_frame = end_frame
+                c_files = all_files[c]
+            else:
+                c_first_frame = (c)*chunk_size
+                c_last_frame = min(len(all_files), (c+1)*chunk_size)-1
+                c_files = all_files[c_first_frame:c_last_frame+1]
+
             frames = np.ndarray([len(c_files), 2048, 2448], dtype=np.float32)
 
             for i in range(len(c_files)):
@@ -472,7 +486,7 @@ def main():
                     half_frames[i] = half_frame
                 gpu_half_frames = torch.from_numpy(half_frames).bfloat16().to(device).reshape(-1, 1, half_frames.shape[1], half_frames.shape[2])
 
-            print(f'>>> Setup took {(time.time() - t_chunk):.02f}s')
+            print(f'>>> Setup took {(time.time() - t_chunk):.02f}s <<<')
 
             ### ### ### ###
             ### ### ### ###
@@ -563,27 +577,27 @@ def main():
             print(f">>> Step 2 complete: Edge & block candidates took {(time.time() - t_step):.02f}s <<<")
 
             if output:
-                j = {
-                    "chunk_markers": chunk_markers,
-                    "chunk_confidence": chunk_confidence,
-                    "chunk_checked_markers": chunk_checked_markers,
-                    "chunk_blocks": chunk_blocks,
-                }
+                j = []
 
-                makedirs(output, exist_ok=True)
+                for i in range(len(c_files)):
+                    j.append({
+                        "markers": chunk_markers[i],
+                        "confidence": chunk_confidence[i],
+                        "checked_markers": chunk_checked_markers[i],
+                        "blocks": chunk_blocks[i],
+                    })
+
                 import json
-                fn = join(output, f'markers_chunk_{utils.leading_zeros(c,4)}_frames_[{c_first_frame}-{c_last_frame}].json')
+                fn = join(output, f'{f"camera_{utils.leading_zeros(c,3)}" if chunks_from_camera_ids else f"chunk_{utils.leading_zeros(c,4)}"}_markers_[{c_first_frame}-{c_last_frame}].json')
                 with open(fn, 'w+', 1) as f:
                     json_string = json.dumps(j, separators=(',', ":"))  # Compact JSON structure
                     f.write(json_string)
 
             t_chunk = time.time() - t_chunk
-            print(f'>>> Chunk [{c}/{chunks}] took {t_chunk:.02f}s (Avg: {(t_chunk / (len(frames))):.02f}s) | Frames [{start_frame}-{end_frame}] | Total [{len(files)}] <<<')
+            print(f'>>> {f"Camera ID [{c}]" if chunks_from_camera_ids else f"Chunk [{c}/{chunks}]"} took {t_chunk:.02f}s (Avg: {(t_chunk / (len(c_files))):.02f}s) | Frames: {len(c_files)} (Range: [{start_frame}-{end_frame}] <<<')
 
     t_global = time.time() - t_global
-    print(f'>>> Processed [{c}/{chunks}] chunks in {t_global:.02f}s (Avg: {(t_global / (len(files))):.02f}s) | Frames [{start_frame}-{end_frame}] | Total [{len(files)}] <<<')
-
-    return
+    print(f'>>> Processed {f"{len(chunks)} cameras" if chunks_from_camera_ids else f"[{c}/{chunks}] chunks"} in {t_global:.02f}s (Avg: {(t_global / (len(all_files))):.02f}s) | Frames: {len(all_files)} (Range: [{start_frame}-{end_frame}] <<<')
 
 
 if __name__ == '__main__':
