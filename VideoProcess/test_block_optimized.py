@@ -283,7 +283,7 @@ def main():
     #     mode="reduce-overhead"
     # )
 
-    markers_chunks_folder = "./Out/synth_01/markers/"
+    markers_chunks_folder = "./Out/synth_02/markers/"
     _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
 
     input_folder = "./Blender/renders/cameras/"

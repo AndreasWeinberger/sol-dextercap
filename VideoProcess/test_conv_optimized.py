@@ -10,9 +10,10 @@ from datasets import EdgeDataset
 import itertools
 import utils
 from os.path import join
-from os import makedirs, listdir
+from os import makedirs, listdir, rename, remove
 import gc
 import concurrent.futures
+import json
 
 
 def combine_patches(out_img, out_img_max, out_img_patch_cnt, out_patches, stride, block_size, input_scale=0):
@@ -386,6 +387,40 @@ def process_block_candidates(frame_idx, markers, edge_pts, edge_pred, edge_confi
     return frame_idx, checked_markers, block_candidates
 
 
+def export(data, output: str, prefix: str, chunk_first_frame: int, chunk_last_frame: int, chunk_overall_first_frame: int, chunk_overall_last_frame: int, update_output: bool):
+    fn = join(output, f'{prefix}_frames_[{chunk_first_frame}-{chunk_last_frame}]_markers.json')
+
+    if update_output:
+        update_files = [join(output,f) for f in listdir(output) if f.startswith(prefix)]
+        if len(update_files) > 0:
+            old_fn = update_files[0]
+            with open(old_fn, 'r') as f:
+                update_data = json.load(f)
+
+                for i in range(chunk_overall_last_frame+1-chunk_overall_first_frame):
+                    if i+chunk_overall_first_frame > len(update_data)-1:
+                        update_data.append(data[i])
+                    else:
+                        update_data[i+chunk_overall_first_frame] = data[i]
+
+            with open(old_fn, 'w+') as f:
+                json_string = json.dumps(update_data, separators=(',', ":"))  # Compact JSON structure
+                f.write(json_string)
+
+            fn = join(output, f'{prefix}_frames_[{chunk_first_frame}-{chunk_first_frame+len(update_data)-1}]_markers.json')
+            if old_fn != fn:
+                rename(old_fn, fn)
+
+            return
+    delete_files = [join(output,f) for f in listdir(output) if f.startswith(prefix)]
+    for f in delete_files:
+        remove(f)
+
+    with open(fn, 'w+', 1) as f:
+        json_string = json.dumps(data, separators=(',', ":"))  # Compact JSON structure
+        f.write(json_string)
+
+
 @torch.no_grad()
 def main():
     t_global = time.time()
@@ -421,183 +456,219 @@ def main():
         mode="reduce-overhead"
     )
 
-    start_frame = 10                                   # when chunks_from_camera_ids is True, this counts for each camera
-    end_frame = 29                                     # when chunks_from_camera_ids is True, this counts for each camera
-    workers = 8                                         # for the ProcessPoolExecutor(), betw. 6-12 is recommended
-    chunk_size = 92                                     # ignored when chunks_from_camera_ids = True
-    chunks_from_camera_ids = True
-    camera_ids = (3,6,9)
+    # Tuple of ids e.g.: (0,1,2,3,4,5,6) or (0,) for only cam_idx 0
+    camera_ids = (0,)
+    # when chunks_from_camera_ids is True, this counts for each camera
+    cam_first_frame = 0
+    # when chunks_from_camera_ids is True, this counts for each camera
+    cam_last_frame = 19
+    # Update output file
+    update_output = False
+    # -1 to create only one chunk with all frames
+    chunk_size = 10
+    # for the ProcessPoolExecutor(), betw. 6-12 is recommended
+    workers = 8
 
-    block_size = 128                                    # betw. 64-256 --> 128 performs best with 0.60s / frame w/o check_half on conv inference
-    stride = 64                                         # half of block_size for overlapping patches in conv inference
+    # betw. 64-256 --> 128 performs best with 0.60s / frame w/o check_half on conv inference
+    block_size = 128
+    # half of block_size for overlapping patches in conv inference
+    stride = 64
 
+    # process conv model on half resolution images --> slower, but may be more robust
+    check_half = False
     marker_distance_thr = 65
     marker_confidence_thr = 0.6
     edge_confidence_thr = 0.6
-    check_half = False                                  # process conv model on half resolution images --> slower, but may be more robust
 
     input = "./Blender/renders/cameras/"
     output = "./Out/synth_02/markers/"
+
     if output:
         makedirs(output, exist_ok=True)
 
-    if chunks_from_camera_ids:
-        cameras = listdir(input)
-        chunks = camera_ids
-        chunk_size = end_frame-start_frame
-        all_files = [[] for _ in range(max(chunks)+1)]
-        for idx in chunks:
-            _, folder_files = utils.folder_contents(join(input, cameras[idx]))
-            all_files[idx].extend(folder_files[start_frame:end_frame+1])
+    cameras = listdir(input)
+
+    all_files = [[] for _ in range(max(camera_ids)+1)]
+    for idx in camera_ids:
+        _, folder_files = utils.folder_contents(join(input, cameras[idx]))
+        all_files[idx].append(folder_files[cam_first_frame:cam_last_frame+1])
+
+    if chunk_size == -1:
+        chunk_cnt = 1
+        chunk_size = cam_last_frame+1-cam_first_frame
     else:
-        chunks = tuple(i for i in range(int((end_frame-start_frame) / chunk_size)) if i in camera_ids)
-        _, folder_files = utils.folder_contents(input, recursive=True)
-        all_files = folder_files[start_frame:min(len(folder_files),end_frame)]
+        chunk_cnt = int((cam_last_frame-cam_first_frame) / chunk_size)+1
+
+    if chunk_cnt > 1:
+        for chunk_idx in range(len(all_files)):
+            if len(all_files[chunk_idx]) == 0:
+                continue
+
+            files = all_files[chunk_idx][0].copy()
+            all_files[chunk_idx] = []
+            for j in range(chunk_cnt):
+                start = (j)*chunk_size
+                end = min(len(files), (j+1)*chunk_size)
+                all_files[chunk_idx].append(files[start:end])
 
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
-        print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
-        for c in chunks:
-            # print(f'>>> Starting chunk [{c}/{chunks}] | Frames [{start_frame}-{end_frame}] | Total [{len(files)}] <<<')
-            t_chunk = time.time()
+        print(f'>>> Running ProcessPoolExecutor() with {workers} workers <<<')
+        for _ in range(workers):
+            executor.submit(time.sleep, .1)
+        for cam_idx in camera_ids:
 
-            if chunks_from_camera_ids:
-                c_first_frame = start_frame
-                c_last_frame = end_frame
-                c_files = all_files[c]
-            else:
-                c_first_frame = (c)*chunk_size
-                c_last_frame = min(len(all_files), (c+1)*chunk_size)-1
-                c_files = all_files[c_first_frame:c_last_frame+1]
+            print(f'>>> Starting camera idx {cam_idx} | Chunks: {len(all_files[cam_idx])} | Range: [{cam_first_frame}-{cam_last_frame}] <<<')
+            t_cam = time.time()
 
-            frames = np.ndarray([len(c_files), 2048, 2448], dtype=np.float32)
+            cam_frames_count = sum([len(all_files[cam_idx][chunk_idx]) for chunk_idx in range(len(all_files[cam_idx]))])
 
-            for i in range(len(c_files)):
-                frame = skimage.io.imread(c_files[i])
-                frame = skimage.color.rgb2gray(frame)
-                frames[i] = frame
+            for chunk_idx in range(len(all_files[cam_idx])):
 
-            gpu_half_frames = None
-            gpu_frames = torch.from_numpy(frames).bfloat16().to(device).reshape(-1, 1, frames.shape[1], frames.shape[2])
+                t_chunk = time.time()
 
-            if check_half:
-                half_frames = np.ndarray([len(c_files), 1024, 1224], dtype=np.float32)
-                for i in range(len(frames)):
-                    half_frame = skimage.transform.rescale(frame, 0.5, anti_aliasing=True)
-                    half_frames[i] = half_frame
-                gpu_half_frames = torch.from_numpy(half_frames).bfloat16().to(device).reshape(-1, 1, half_frames.shape[1], half_frames.shape[2])
+                chunk_first_frame = (chunk_idx)*chunk_size
+                chunk_last_frame = min(((chunk_idx+1)*chunk_size)-1,cam_frames_count-1)
+                chunk_overall_first_frame = chunk_first_frame + cam_first_frame
+                chunk_overall_last_frame = chunk_last_frame + cam_first_frame
 
-            print(f'>>> Setup took {(time.time() - t_chunk):.02f}s <<<')
+                print(f'>>> Starting chunk idx [{chunk_idx}/{chunk_cnt-1}] | Frames: {chunk_overall_last_frame+1-chunk_overall_first_frame} | Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}] <<<')
 
-            ### ### ### ###
-            ### ### ### ###
-            ### ### ### ###
+                frames = np.ndarray([len(all_files[cam_idx][chunk_idx]), 2048, 2448], dtype=np.float32)
 
-            t_step = time.time()
-            chunk_markers = [0 for _ in range(len(frames))]
-            chunk_confidence = [0 for _ in range(len(frames))]
-            chunk_edge_pts = [0 for _ in range(len(frames))]
-            chunk_markers_in_range = [0 for _ in range(len(frames))]
-            chunk_edge_imgs = [0 for _ in range(len(frames))]
+                for frame_idx in range(len(all_files[cam_idx][chunk_idx])):
+                    frame = skimage.io.imread(all_files[cam_idx][chunk_idx][frame_idx])
+                    frame = skimage.color.rgb2gray(frame)
+                    frames[frame_idx] = frame
 
-            chunk_checked_markers = [0 for _ in range(len(frames))]
-            chunk_blocks = [0 for _ in range(len(frames))]
-
-            futures = []
-
-            def done_edge_imgs(future):
-                frame_idx, edge_imgs, edge_pts, markers_in_range, markers, confidence = future.result()
-
-                chunk_markers_in_range[frame_idx] = markers_in_range
-                chunk_confidence[frame_idx] = confidence
-                chunk_markers[frame_idx] = markers
-                chunk_edge_pts[frame_idx] = edge_pts
-                chunk_edge_imgs[frame_idx] = edge_imgs
-
-            def done_block_candidates(future):
-                frame_idx, checked_markers, block_candidates = future.result()
-
-                chunk_checked_markers[frame_idx] = checked_markers
-                chunk_blocks[frame_idx] = block_candidates
-
-            for i in range(len(frames)):
-                t_conv = time.time()
+                gpu_half_frames = None
+                gpu_frames = torch.from_numpy(frames).bfloat16().to(device).reshape(-1, 1, frames.shape[1], frames.shape[2])
 
                 if check_half:
-                    h = gpu_half_frames[i]
-                else:
-                    h = None
-                # 0.86s / frame, GPU constant ~100%, lots of VRAM usage
-                # process_conv_inference_1(gpu_frames, gpu_half_frames, all_out_img, all_out_img_max, all_out_img_patch_cnt, conv_model, stride, block_size)
-                # 0.85s / frame, GPU spikes ~70-80%, constantly low VRAM usage
-                out_img = process_conv_inference_3(i, gpu_frames[i], h, conv_model, stride, block_size)
+                    half_frames = np.ndarray([len(all_files[cam_idx][chunk_idx]), 1024, 1224], dtype=np.float32)
+                    for frame_idx in range(len(frames)):
+                        half_frame = skimage.transform.rescale(frame, 0.5, anti_aliasing=True)
+                        half_frames[frame_idx] = half_frame
+                    gpu_half_frames = torch.from_numpy(half_frames).bfloat16().to(device).reshape(-1, 1, half_frames.shape[1], half_frames.shape[2])
 
-                fut = executor.submit(process_edge_imgs, i, frames[i], out_img, marker_confidence_thr, marker_distance_thr)
-                fut.add_done_callback(done_edge_imgs)
-                futures.append(fut)
+                print(f'> Setup took {(time.time() - t_chunk):.02f}s')
 
-                print(f'\t> Conv inference [{i}] took {(time.time() - t_conv):.02f}s')
+                ### ### ### ###
+                ### ### ### ###
+                ### ### ### ###
 
-            for f in futures:
-                f.result()
+                t_step = time.time()
+                chunk_markers = [0 for _ in range(len(frames))]
+                chunk_confidence = [0 for _ in range(len(frames))]
+                chunk_edge_pts = [0 for _ in range(len(frames))]
+                chunk_markers_in_range = [0 for _ in range(len(frames))]
+                chunk_edge_imgs = [0 for _ in range(len(frames))]
 
-            f = []
+                chunk_checked_markers = [0 for _ in range(len(frames))]
+                chunk_blocks = [0 for _ in range(len(frames))]
 
-            del gpu_half_frames
-            del gpu_frames
-            if check_half:
-                del half_frames
-            gc.collect()
-            torch.cuda.empty_cache()
+                futures = []
 
-            print(f">>> Step 1 complete: Conv & combine patches took {(time.time() - t_step):.02f}s <<<")
+                def done_edge_imgs(future):
+                    frame_idx, edge_imgs, edge_pts, markers_in_range, markers, confidence = future.result()
 
-            t_step = time.time()
+                    chunk_markers_in_range[frame_idx] = markers_in_range
+                    chunk_confidence[frame_idx] = confidence
+                    chunk_markers[frame_idx] = markers
+                    chunk_edge_pts[frame_idx] = edge_pts
+                    chunk_edge_imgs[frame_idx] = edge_imgs
 
-            for i in range(len(frames)):
-                t_edge = time.time()
+                def done_block_candidates(future):
+                    frame_idx, checked_markers, block_candidates = future.result()
 
-                # pred = process_edge_model_2(chunk_edge_imgs[i], edge_model, device)
-                edge_imgs = torch.from_numpy(chunk_edge_imgs[i]).to(device)
-                pred = edge_model(edge_imgs).sigmoid().cpu().numpy().flatten()
+                    chunk_checked_markers[frame_idx] = checked_markers
+                    chunk_blocks[frame_idx] = block_candidates
+
+                for frame_idx in range(len(frames)):
+                    t_conv = time.time()
+
+                    if check_half:
+                        h = gpu_half_frames[frame_idx]
+                    else:
+                        h = None
+                    # 0.86s / frame, GPU constant ~100%, lots of VRAM usage
+                    # process_conv_inference_1(gpu_frames, gpu_half_frames, all_out_img, all_out_img_max, all_out_img_patch_cnt, conv_model, stride, block_size)
+                    # 0.85s / frame, GPU spikes ~70-80%, constantly low VRAM usage
+                    out_img = process_conv_inference_3(frame_idx, gpu_frames[frame_idx], h, conv_model, stride, block_size)
+
+                    fut = executor.submit(process_edge_imgs, frame_idx, frames[frame_idx], out_img, marker_confidence_thr, marker_distance_thr)
+                    fut.add_done_callback(done_edge_imgs)
+                    futures.append(fut)
+
+                    print(f'\t> Conv inference [{frame_idx}] took {(time.time() - t_conv):.02f}s')
+
+                for f in futures:
+                    f.result()
+
+                f = []
+
+                del gpu_half_frames
+                del gpu_frames
+                if check_half:
+                    del half_frames
+                gc.collect()
                 torch.cuda.empty_cache()
 
-                fut = executor.submit(process_block_candidates, i, chunk_markers[i], chunk_edge_pts[i], pred, edge_confidence_thr, chunk_markers_in_range[i])
-                fut.add_done_callback(done_block_candidates)
-                futures.append(fut)
+                print(f">>> Step 1 complete: Conv & combine patches took {(time.time() - t_step):.02f}s <<<")
 
-                print(f'\t> Edge inference [{i}] took {(time.time() - t_edge):.02f}s')
+                t_step = time.time()
 
-            del chunk_edge_imgs
-            gc.collect()
-            torch.cuda.empty_cache()
+                for frame_idx in range(len(frames)):
+                    t_edge = time.time()
 
-            for f in futures:
-                f.result()
+                    pred = process_edge_model_2(chunk_edge_imgs[frame_idx], edge_model, device)
+                    # edge_imgs = torch.from_numpy(chunk_edge_imgs[frame_idx]).to(device)
+                    # pred = edge_model(edge_imgs).sigmoid().cpu().numpy().flatten()
+                    # torch.cuda.empty_cache()
 
-            print(f">>> Step 2 complete: Edge & block candidates took {(time.time() - t_step):.02f}s <<<")
+                    fut = executor.submit(process_block_candidates, frame_idx, chunk_markers[frame_idx], chunk_edge_pts[frame_idx], pred, edge_confidence_thr, chunk_markers_in_range[frame_idx])
+                    fut.add_done_callback(done_block_candidates)
+                    futures.append(fut)
 
-            if output:
-                j = []
+                    print(f'\t> Edge inference [{frame_idx}] took {(time.time() - t_edge):.02f}s')
 
-                for i in range(len(c_files)):
-                    j.append({
-                        "markers": chunk_markers[i],
-                        "confidence": chunk_confidence[i],
-                        "checked_markers": chunk_checked_markers[i],
-                        "blocks": chunk_blocks[i],
-                    })
+                del chunk_edge_imgs
+                gc.collect()
+                torch.cuda.empty_cache()
 
-                import json
-                fn = join(output, f'{f"camera_{utils.leading_zeros(c,3)}" if chunks_from_camera_ids else f"chunk_{utils.leading_zeros(c,4)}"}_markers_[{c_first_frame}-{c_last_frame}].json')
-                with open(fn, 'w+', 1) as f:
-                    json_string = json.dumps(j, separators=(',', ":"))  # Compact JSON structure
-                    f.write(json_string)
+                for f in futures:
+                    f.result()
 
-            t_chunk = time.time() - t_chunk
-            print(f'>>> {f"Camera ID [{c}]" if chunks_from_camera_ids else f"Chunk [{c}/{chunks}]"} took {t_chunk:.02f}s (Avg: {(t_chunk / (len(c_files))):.02f}s) | Frames: {len(c_files)} (Range: [{start_frame}-{end_frame}] <<<')
+                print(f">>> Step 2 complete: Edge & block candidates took {(time.time() - t_step):.02f}s <<<")
 
+                if output:
+                    j = []
+
+                    for frame_idx in range(len(all_files[cam_idx][chunk_idx])):
+                        j.append({
+                            "markers": chunk_markers[frame_idx],
+                            "confidence": chunk_confidence[frame_idx],
+                            "checked_markers": chunk_checked_markers[frame_idx],
+                            "blocks": chunk_blocks[frame_idx],
+                        })
+
+                    prefix = f"camera_{utils.leading_zeros(cam_idx,3)}_chunk_{utils.leading_zeros(chunk_idx,3)}"
+                    export(j, output, prefix, chunk_first_frame, chunk_last_frame, chunk_overall_first_frame, chunk_overall_last_frame, update_output)
+
+                t_chunk = time.time() - t_chunk
+                print(f'>>> Chunk idx [{chunk_idx}/{chunk_cnt-1}]" took {t_chunk:.02f}s (Avg: {(t_chunk / (chunk_overall_last_frame+1-chunk_overall_first_frame)):.02f}s) | Frames: {chunk_overall_last_frame+1-chunk_overall_first_frame} (Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}]) <<<\n')
+
+            t_cam = time.time() - t_cam
+            print(f'>>> Camera idx {cam_idx} took {t_cam:.02f}s (Avg: {(t_cam / cam_frames_count):.02f}s) | Frames: {cam_frames_count} (Range: [{cam_first_frame}-{cam_last_frame}]) <<<\n')
+
+    if not update_output:
+        delete_files = [join(output,f) for file_idx, f in enumerate(listdir(output)) if f.startswith(f"camera_{utils.leading_zeros(cam_idx,3)}") and file_idx > chunk_cnt-1]
+        for f in delete_files:
+            remove(f)
+
+    all_frames_count = sum([len(all_files[cam_idx][chunk_idx]) for chunk_idx in range(len(all_files[cam_idx])) for cam_idx in range(len(all_files))])
     t_global = time.time() - t_global
-    print(f'>>> Processed {f"{len(chunks)} cameras" if chunks_from_camera_ids else f"[{c}/{chunks}] chunks"} in {t_global:.02f}s (Avg: {(t_global / (len(all_files))):.02f}s) | Frames: {len(all_files)} (Range: [{start_frame}-{end_frame}] <<<')
+    print(
+        f'>>> Processed camera idx {camera_ids} ({chunk_cnt} chunks / cam) in {t_global:.02f}s (Avg: {(t_global / all_frames_count):.02f}s) | Cam frame range: [{cam_first_frame}-{cam_last_frame}] | Frames: {all_frames_count} <<<\n')
 
 
 if __name__ == '__main__':
