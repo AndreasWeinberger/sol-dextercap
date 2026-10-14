@@ -4,8 +4,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from ignite.engine import Engine, Events, create_supervised_trainer, create_supervised_evaluator
-from ignite.metrics import Accuracy, Loss, MeanAbsoluteError
+from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
+from ignite.metrics import Loss
 from ignite.handlers import ModelCheckpoint, Checkpoint
 from ignite.contrib.handlers import TensorboardLogger, global_step_from_engine
 
@@ -14,8 +14,6 @@ from .datasets import BlockCodeDataset
 
 from torcheval.metrics.functional import binary_f1_score, binary_recall, binary_precision
 
-import numpy as np
-
 from typing import Tuple
 
 import argparse
@@ -23,18 +21,19 @@ import argparse
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
-    torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
-    torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
+    # torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
+    # torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
 
     # args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--labels', default=None, type=str, required=True, help='Path to the labels.json file containing "image" fields and annotated data')
-    parser.add_argument('--out', default='./ckpts/0001/', type=str)
-    parser.add_argument('--lr', default=0.001, type=float, required=True)
-    parser.add_argument('--batch-size', default=512, type=int, required=True)
+    parser.add_argument('--labels', default='./Data/synth_01/dataset/train_D/labels.json', type=str, help='Path to the labels.json file containing "image" fields and annotated data')
+    parser.add_argument('--out', default='./ckpts/0008/', type=str)
+    parser.add_argument('--logsubdir', default='/0008/block', type=str)
+    parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--batch-size', default=512, type=int)
     parser.add_argument('--augment', default=True, type=bool)
     parser.add_argument('--max-epochs', default=400, type=int)
-    parser.add_argument('--num-workers', default=8, type=int)
+    parser.add_argument('--num-workers', default=4, type=int)
     parser.add_argument('--checkpoint', default=None, type=str)
     parser.add_argument('--debug', default=False, type=bool)
 
@@ -47,7 +46,7 @@ if __name__ == "__main__":
 
     val_loader = DataLoader(
         BlockCodeDataset(args.dataset_folder, args.labels, size=1280, train=False, augment_image=False, debugging=args.debug),
-        batch_size=args.batch_size, shuffle=False, num_workers=int(args.num_workers / 2), persistent_workers=args.num_workers > 0, pin_memory=True
+        batch_size=args.batch_size, shuffle=False, num_workers=min(2,int(args.num_workers / 2)), persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     model = BlockNet(label0_chars=len(dataset.label_characters_0), label1_chars=len(dataset.label_characters_1), blk_dirs=5).to(device)
@@ -119,7 +118,7 @@ if __name__ == "__main__":
     # train_evaluator = create_supervised_evaluator(model, metrics=val_metrics, device=device)
 
     log_interval = 1
-    tb_logger = TensorboardLogger(log_dir="logger/block")
+    tb_logger = TensorboardLogger(log_dir=f"logger/{args.logsubdir}")
 
     @trainer.on(Events.ITERATION_COMPLETED(every=log_interval))
     def log_training_loss(engine):

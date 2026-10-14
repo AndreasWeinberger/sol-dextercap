@@ -1,0 +1,13 @@
+import os, bpy
+import numpy as np
+import math, mathutils
+
+def GetAveragePosition(objects):
+    avg = mathutils.Vector()
+    for o in objects:
+        avg += o.location
+    return avg / len(objects)
+    
+
+if __name__ == '__main__':
+    print(GetAveragePosition(bpy.context.selected_objects))

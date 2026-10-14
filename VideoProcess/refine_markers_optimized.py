@@ -1,5 +1,5 @@
 import scipy.spatial
-import utils
+from . import utils
 
 import skimage
 import numpy as np
@@ -76,7 +76,7 @@ def subpixel_refine(gray: np.ndarray, markers: np.ndarray, blocks: np.ndarray, *
     return markers_subpixel, blocks_refined, removed_markers, removed_blocks
 
 
-def process_frame(frame_idx: int, fn: str, all_markers:list):
+def process_frame(frame_idx: int, fn: str, all_markers: list):
     # t_start = time.time()
 
     frame = skimage.io.imread(fn)
@@ -106,7 +106,7 @@ def process_frame(frame_idx: int, fn: str, all_markers:list):
 
     # print(f'\t> Refine markers [{frame_idx}] | Time: {time.time() - t_start:.02f}s')
 
-    return frame_idx, refined_markers, refined_blocks, refined_bock_labels
+    return frame_idx, refined_markers, refined_blocks, refined_bock_labels, len(removed_markers)
 
 
 def main():
@@ -124,71 +124,119 @@ def main():
 
     t_global = time.time()
 
-    start_frame = 0
-    end_frame = 99
+    # Tuple of ids e.g.: (0,1,2,3,4,5,6) or (0,) for only cam_idx 0
+    cam_ids = "0,1,2,3,4,5,6,7,8,9,10,11,12"
+    cam_first_frame = 0
+    cam_last_frame = 199
     workers = 12
-    chunk_size = 92
+    chunk_size = 64
+    render_video = False
 
-    markers_chunks_folder = "./Out/synth_01/block_labels/"
-    _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
+    chunks_folder = "./Out/synth_06/block_labels/"
+    imgs_folder = "./Blender/renders/cameras_D/"
+    output = "./Out/synth_06/refined_markers/"
 
-    input_folder = "./Blender/renders/cameras/"
-    input = "./Blender/renders/cameras/"
-    all_files = []
-    for cam in os.listdir(input):
-        _, folder_files = utils.folder_contents(os.path.join(input, cam))
-        all_files.extend(folder_files[start_frame:end_frame+1])
+    if output:
+        os.makedirs(output, exist_ok=True)
 
-    output = "./Out/synth_01/refined_markers/"
+    cam_ids = tuple(int(x) for x in cam_ids.split(","))
 
-    chunks = int(len(all_files) / chunk_size) + 1
-    start_chunk = int(start_frame / chunk_size)+1
+    all_files = utils.get_file_names_with_cam_ids(cam_ids, imgs_folder, cam_first_frame, cam_last_frame)
 
-    print(f'>>> Setup took {(time.time() - t_global):.02f}s')
+    if chunk_size == -1:
+        chunk_cnt = 1
+        chunk_size = cam_last_frame+1-cam_first_frame
+    else:
+        chunk_cnt = int((cam_last_frame-cam_first_frame) / chunk_size)+1
+
+    if chunk_cnt > 1:
+        all_files = utils.chunk_cam_file_names(all_files, chunk_cnt, chunk_size)
 
     print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
-        for c in range(start_chunk, chunks + 1, 1):
+        for _ in range(workers):
+            executor.submit(time.sleep, .1)
 
-            # print(f'> Starting chunk [{c}/{chunks}] | Frames [{start_frame}-{end_frame}] | Total [{len(files)}]')
-            t_chunk = time.time()
+        all_frames_cnt = 0
+        all_removed_markers_cnt = 0
 
-            c_first_frame = (c-1)*chunk_size
-            c_last_frame = min(len(all_files), c*chunk_size)-1
-            c_files = all_files[c_first_frame:c_last_frame+1]
+        for cam_idx in cam_ids:
+            t_cam = time.time()
+            _, cam_chunk_files = utils.folder_contents(chunks_folder, True, files_filter_lambda=lambda x: x.startswith(
+                f'cam_{utils.leading_zeros(cam_idx,3)}') and x.endswith('block_labels.json'))
 
-            with open(markers_chunks_files[c-1]) as f:
-                all_markers = json.load(f)
+            if len(cam_chunk_files) == 0:
+                print(f'> Skipping cam idx {cam_idx} | No chunk files!')
+                continue
 
-            def done_refine_markers(future):
-                frame_idx, refined_markers, refined_blocks, refined_bock_labels = future.result()
+            print(f'> Starting cam idx {cam_idx} | Chunks: {chunk_cnt} | Range: [{cam_first_frame}-{cam_last_frame}]')
 
-                all_markers[frame_idx]['refined_markers'] = refined_markers
-                all_markers[frame_idx]['refined_blocks'] = refined_blocks
-                all_markers[frame_idx]['refined_bock_labels'] = refined_bock_labels
+            cam_frames_cnt = 0
+            cam_removed_markers_cnt = 0
+            # ffmpeg_process = None
 
-            futures = []
+            for chunk_idx in range(chunk_cnt):
 
-            for frame_idx in range(len(c_files)):
-                fut = executor.submit(process_frame, frame_idx, c_files[frame_idx], all_markers[frame_idx])
-                fut.add_done_callback(done_refine_markers)
-                futures.append(fut)
+                t_chunk = time.time()
 
-            for f in futures:
-                f.result()
+                chunk_first_frame = (chunk_idx)*chunk_size
+                chunk_last_frame = min(((chunk_idx+1)*chunk_size)-1, cam_last_frame - cam_first_frame)
+                chunk_overall_first_frame = chunk_first_frame + cam_first_frame
+                chunk_overall_last_frame = chunk_last_frame + cam_first_frame
+                chunk_removed_markers_cnt = 0
 
-            if output:
-                os.makedirs(output, exist_ok=True)
-                fn = os.path.join(output, f'refined_markers_chunk_{utils.leading_zeros(c,4)}_frames_[{c_first_frame}-{c_last_frame}].json')
-                with open(fn, 'w+', 1) as f:
-                    json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
-                    f.write(json_string)
+                print(f'> Starting chunk [{chunk_idx+1}/{len(cam_chunk_files)}] | Frames: {chunk_size} | Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}]')
 
-            t_chunk = time.time() - t_chunk
-            print(f'> Chunk [{c}/{chunks}] | Time: {t_chunk:.02f}s (Avg {(t_chunk / len(all_markers)):.02f}s / frame) | Frames: {len(c_files)} (Chunk range: [{c_first_frame}-{c_last_frame}])')
+                with open(cam_chunk_files[chunk_idx]) as f:
+                    all_markers = json.load(f)
+
+                c_files = all_files[cam_idx][chunk_idx]
+
+                cam_frames_cnt += len(c_files)
+
+                futures = []
+
+                # print(f'> Setup took {(time.time() - t_chunk):.02f}s')
+
+                def done_refine_markers(future):
+                    frame_idx, refined_markers, refined_blocks, refined_bock_labels, removed_markers_cnt = future.result()
+
+                    all_markers[frame_idx]['refined_markers'] = refined_markers
+                    all_markers[frame_idx]['refined_blocks'] = refined_blocks
+                    all_markers[frame_idx]['refined_bock_labels'] = refined_bock_labels
+                    nonlocal chunk_removed_markers_cnt
+                    chunk_removed_markers_cnt += removed_markers_cnt
+
+                for frame_idx in range(len(c_files)):
+                    fut = executor.submit(process_frame, frame_idx, c_files[frame_idx], all_markers[frame_idx])
+                    fut.add_done_callback(done_refine_markers)
+                    futures.append(fut)
+
+                for f in futures:
+                    f.result()
+
+                cam_removed_markers_cnt += chunk_removed_markers_cnt
+
+                if output:
+                    os.makedirs(output, exist_ok=True)
+                    fn = os.path.join(output, f'cam_{utils.leading_zeros(cam_idx,3)}_chunk_{utils.leading_zeros(chunk_idx,3)}_[{chunk_first_frame}-{chunk_last_frame}]_refined_markers.json')
+                    with open(fn, 'w+', 1) as f:
+                        json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+                        f.write(json_string)
+
+                t_chunk = time.time() - t_chunk
+                print(f'> Chunk [{chunk_idx+1}/{chunk_cnt}] | Time: {t_chunk:.02f}s (Avg {(t_chunk / len(c_files)):.02f}s / frame) | Frames: {len(c_files)} (Chunk range: [{chunk_first_frame}-{chunk_last_frame}]) | Markers removed: {chunk_removed_markers_cnt}\n')
+
+            all_frames_cnt += cam_frames_cnt
+            all_removed_markers_cnt += cam_removed_markers_cnt
+
+            t_cam = time.time() - t_cam
+            print(
+                f'> Cam idx {cam_idx} took {t_cam:.02f}s (Avg: {(t_cam / cam_frames_cnt):.02f}s) | Frames: {cam_frames_cnt} (Range: [{cam_first_frame}-{cam_last_frame}]) | Markers removed: {cam_removed_markers_cnt}\n')
 
     t_global = time.time() - t_global
-    print(f'>>> Processed [{c}/{chunks}] chunks | Time: {t_global:.02f}s (Avg: {(t_global / (len(all_files))):.02f}s) | Frames: {len(all_files)} (Cam range: [{start_frame}-{end_frame}] <<<')
+    print(
+        f'> Processed {cam_ids} ({chunk_cnt} chunks / cam) in {t_global:.02f}s (Avg: {(t_global / all_frames_cnt):.02f}s) | Cam frame range: [{cam_first_frame}-{cam_last_frame}] | Frames: {all_frames_cnt}  | Markers removed: {all_removed_markers_cnt}\n')
 
 
 if __name__ == '__main__':

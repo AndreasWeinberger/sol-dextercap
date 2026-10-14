@@ -59,11 +59,11 @@ def init_rerun(name: str, camera_ids: List[int]):
 
 
 def visualize_cameras(camera_ids: List[int], folder):
-    camera_names = os.listdir(folder)
+    extrinsic_files = os.listdir(folder)
 
     for cam_id in camera_ids:
 
-        with np.load(os.path.join(folder, camera_names[cam_id-1], f'{camera_names[cam_id-1]}_extrinsics.npz')) as f:
+        with np.load(os.path.join(folder, extrinsic_files[cam_id-1])) as f:
             instrinsic = f["intrinsics"]
             tvec, rmat = f["tvecs"], f["rmats"]
 
@@ -180,11 +180,11 @@ def visualize_blocks(points, blocks):
 
 def visualize():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, required=True, help='Camera subfolders each containing _extrinsics.npz files')
+    parser.add_argument("--input", type=str, default="./Out/synth_02/calibration/extrinsics", help='Camera subfolders each containing _extrinsics.npz files')
 
-    parser.add_argument("-f", "--file", type=str, required=True, help='Either _triangulation.npz file or _markers_3d_positions.npy file')
+    parser.add_argument("-f", "--file", type=str, default="./Out/synth_05/triangulation/all_triangulation.npz", help='Either _triangulation.npz file or _markers_3d_positions.npy file')
     parser.add_argument("--camera-ids", default="1,2,3,4,5,6,7,8,9,10,11,12,13", type=str, help="id of cameras, in the fmt of 2,3,4...")
-    parser.add_argument('-l', "--label-patches", type=str, required=True, help="label_patches.json")
+    parser.add_argument('-l', "--label-patches", type=str, default='./Out/synth_05/patches/all.json', help="label_patches.json")
 
     parser.add_argument("--fps", type=int, default=20)
 

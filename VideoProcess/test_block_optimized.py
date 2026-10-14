@@ -3,9 +3,9 @@ from torch import nn
 import skimage
 import numpy as np
 
-import utils
-from models import BlockNet
-from datasets import BlockCodeDataset_Base
+from . import utils
+from .models import BlockNet
+from .datasets import BlockCodeDataset_Base
 
 import cv2
 
@@ -15,6 +15,9 @@ import time
 import concurrent.futures
 
 import json
+import datetime as dt
+import gc
+
 
 def draw_block_code(image: np.ndarray, markers: np.ndarray, blocks: np.ndarray, label_0_char, label_1_char, blk_dir, wrap_text: bool, label_confidence_thr: float = 0.5):
     for blk_idx, blk in enumerate(blocks):
@@ -175,10 +178,10 @@ def process_block_inference(frame_idx: int, blk_imgs: torch.Tensor, block_model:
     label_1_char = [(label_characters_1[idx], label_1[i, idx]) for i, idx in enumerate(label_1_idx)]
     blk_dir_idx = [(idx, blk_dir[i, idx]) for i, idx in enumerate(blk_dir_idx)]
 
-    del label_0
-    del label_1
-    del blk_dir
-    torch.cuda.empty_cache()
+    # del label_0
+    # del label_1
+    # del blk_dir
+    # torch.cuda.empty_cache()
 
     # print(f'\t> Frame: {frame_idx} | Block inference took {(time.time() - t_start):.02f}s')
 
@@ -189,7 +192,11 @@ def process_block_labels(frame_idx, blocks, label_0_char, label_1_char, blk_dir)
 
     # t_start = time.time()
 
+    assert len(label_0_char) == len(blocks) and len(label_1_char) == len(blocks) and len(blk_dir) == len(
+        blocks), f'Lengths dont match in Frame: {frame_idx}, Blocks: {len(blocks)}, Label_0_char: {len(label_0_char)}, Label_1_char: {len(label_1_char)}, Blk_dir: {len(blk_dir)}, '
+
     block_labels = []
+
     for blk_idx, blk in enumerate(blocks):
         label = label_0_char[blk_idx][0] + label_1_char[blk_idx][0]
         label_confidence = label_0_char[blk_idx][1] * label_1_char[blk_idx][1]
@@ -202,6 +209,7 @@ def process_block_labels(frame_idx, blocks, label_0_char, label_1_char, blk_dir)
     # print(f'\t> Frame {frame_idx} | Process block labels took {(time.time() - t_start):.2f}s')
 
     return frame_idx, block_labels
+
 
 @torch.inference_mode()
 @torch.no_grad()
@@ -256,25 +264,28 @@ def main():
 
     device = torch.device(f"cuda:0" if torch.cuda.is_available() else "cpu")
 
-    torch.set_default_dtype(torch.bfloat16)
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.set_float32_matmul_precision('medium')
+    # torch.set_default_dtype(torch.bfloat16)
+    # torch.backends.cuda.matmul.allow_tf32 = True
+    # torch.backends.cudnn.allow_tf32 = True
+    # torch.set_float32_matmul_precision('medium')
 
-    start_frame = 0
-    end_frame = 99
+    # Tuple of ids e.g.: (0,1,2,3,4,5,6) or (0,) for only cam_idx 0
+    cam_ids = "0,1,2,3,4,5,6,7,8,9,10,11,12"
+    cam_first_frame = 0
+    cam_last_frame = 199
+    chunk_size = 64
     workers = 6
-    chunk_size = 92
+    render_video = 0
 
-    labels = "./Data/synth_01/dataset/train/labels.json"
+    labels = "./Data/synth_01/dataset/train_D/labels.json"
     dataset_folder, labels = os.path.split(labels)
     dataset = BlockCodeDataset_Base(dataset_folder, labels)
 
     block_model = BlockNet(label0_chars=len(dataset.label_characters_0), label1_chars=len(dataset.label_characters_1), blk_dirs=5).to(device)
-    block_model.load_state_dict(torch.load("./ckpts/0005/block/best_lr_0.001_bs_512_model_156_f1_score=0.9857.pt", weights_only=True, map_location=device))
-    block_model.to(dtype=torch.float32)
+    block_model.load_state_dict(torch.load("./ckpts/0007/block/best_lr_0.001_bs_512_model_110_f1_score=0.9961.pt", weights_only=True, map_location=device))
+    # block_model.to(dtype=torch.float32)
 
-    # block_model.eval()
+    block_model.eval()
 
     # block_model = torch.compile(
     #     block_model,
@@ -283,140 +294,212 @@ def main():
     #     mode="reduce-overhead"
     # )
 
-    markers_chunks_folder = "./Out/synth_02/markers/"
-    _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
+    chunks_folder = "./Out/synth_06/markers/"
+    output = "./Out/synth_06/block_labels/"
+    imgs_folder = "./Blender/renders/cameras_D/"
 
-    input_folder = "./Blender/renders/cameras/"
-    all_files = []
-    for cam in os.listdir(input_folder):
-        _, f = utils.folder_contents(os.path.join(input_folder, cam))
-        all_files.extend(f[start_frame:end_frame+1])
+    if output:
+        os.makedirs(output, exist_ok=True)
 
-    output = "./Out/synth_01/block_labels/"
+    cam_ids = tuple(int(x) for x in cam_ids.split(","))
 
-    chunks = int(len(all_files) / chunk_size)+1
-    start_chunk = int(start_frame / chunk_size)+1
+    all_files = utils.get_file_names_with_cam_ids(cam_ids, imgs_folder, cam_first_frame, cam_last_frame)
 
-    all_blocks_count = 0
+    if chunk_size == -1:
+        chunk_cnt = 1
+        chunk_size = cam_last_frame+1-cam_first_frame
+    else:
+        chunk_cnt = int((cam_last_frame-cam_first_frame) / chunk_size)+1
 
-    print(f'>>> Setup took {(time.time() - t_global):.02f}s <<<')
+    if chunk_cnt > 1:
+        all_files = utils.chunk_cam_file_names(all_files, chunk_cnt, chunk_size)
 
-    print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
+    all_blocks_cnt = 0
+
+    print(f'> Running ProcessPoolExecutor() with [{workers}] workers')
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
-        # for _ in range(workers):
-        #     executor.submit(time.sleep, .1)
+        for _ in range(workers):
+            executor.submit(time.sleep, .1)
 
-        for c in range(start_chunk, chunks + 1, 1):
-            
-            futures = []
+        all_frames_cnt = 0
 
-            t_chunk = time.time()
+        for cam_idx in cam_ids:
+            t_cam = time.time()
+            _, cam_chunk_files = utils.folder_contents(chunks_folder, True, files_filter_lambda=lambda x: x.startswith(f'cam_{utils.leading_zeros(cam_idx,3)}') and x.endswith('markers.json'))
 
-            c_first_frame = (c-1)*chunk_size
-            c_last_frame = min(len(all_files), c*chunk_size)-1
-            c_files = all_files[c_first_frame:c_last_frame+1]
+            if len(cam_chunk_files) == 0:
+                print(f'> Skipping cam idx {cam_idx} | No chunk files!')
+                continue
 
-            chunk_blocks_count = 0
+            print(f'> Starting cam idx {cam_idx} | Chunks: {chunk_cnt} | Range: [{cam_first_frame}-{cam_last_frame}]')
 
-            with open(markers_chunks_files[c-1]) as f:
-                all_markers = json.load(f)
+            cam_frames_cnt = 0
+            ffmpeg_process = None
 
-            def done_block_labels(future):
-                frame_idx, block_labels = future.result()
+            for chunk_idx in range(chunk_cnt):
 
-                all_markers[frame_idx]['block_labels'] = block_labels
+                t_chunk = time.time()
 
-            def done_prepare_blk_imgs(future):
-                frame_idx, blk_imgs, blocks_count = future.result()
+                chunk_first_frame = (chunk_idx)*chunk_size
+                chunk_last_frame = min(((chunk_idx+1)*chunk_size)-1, cam_last_frame - cam_first_frame)
+                chunk_overall_first_frame = chunk_first_frame + cam_first_frame
+                chunk_overall_last_frame = chunk_last_frame + cam_first_frame
 
-                assert len(blk_imgs) != 0, f'No blocks for frame {frame_idx}'
+                print(f'> Starting chunk [{chunk_idx+1}/{len(cam_chunk_files)}] | Frames: {chunk_size} | Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}]')
 
-                nonlocal chunk_blocks_count
-                chunk_blocks_count += blocks_count
+                with open(cam_chunk_files[chunk_idx]) as f:
+                    all_markers = json.load(f)
 
-                label_0_char, label_1_char, blk_dir_idx = process_block_inference(frame_idx, blk_imgs, block_model, dataset.label_characters_0, dataset.label_characters_1)
+                c_files = all_files[cam_idx][chunk_idx]
 
-                fut = executor.submit(process_block_labels, frame_idx, all_markers[frame_idx]['blocks'], label_0_char, label_1_char, blk_dir_idx)
-                fut.add_done_callback(done_block_labels)
-                futures.append(fut)
+                cam_frames_cnt += len(c_files)
 
-            for i in range(len(c_files)):
-                fut = executor.submit(prepare_blk_imgs, i, c_files[i], all_markers[i], dataset, device)
-                fut.add_done_callback(done_prepare_blk_imgs)
-                futures.append(fut)
+                chunk_blocks_cnt = 0
+                futures = []
+                all_block_labels = [() for _ in range(len(c_files))]
 
-            for f in futures:
-                f.result()
+                # print(f'> Setup took {(time.time() - t_chunk):.02f}s')
 
-            torch.cuda.empty_cache()
-            
-            if output:
-                os.makedirs(output, exist_ok=True)
-                fn = os.path.join(output, f'block_labels_chunk_{utils.leading_zeros(c,4)}_frames_[{c_first_frame}-{c_last_frame}].json')
-                with open(fn, 'w+', 1) as f:
-                    json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
-                    f.write(json_string)
+                def done_block_labels(future):
+                    frame_idx, block_labels = future.result()
 
-            #     print(f'>>> Start render video...')
-            #     t_video = time.time()
-            #     vid_path = os.path.join(output, f'block_labels_[{len(all_markers)}].mp4')
-            #     ffmpeg_process = None
+                    all_markers[frame_idx]['block_labels'] = block_labels
 
-            #     all_marker_pos = np.concatenate([frame['checked_markers'] for frame in all_markers if len(frame['checked_markers']) > 0], axis=0)
-            #     roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 10) // 2 * 2
-            #     roi_max = (np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int)) // 2 * 2 + 10
- 
-            #     for i, frame in enumerate(frame):
-            #         frame = (frame*255).astype(np.uint8)
-            #         frame_marker = frame.copy()
-            #         frame1_marker = frame.copy()
-            #         frame1_marker_black = np.zeros_like(frame)
-            #         frame2_marker = frame.copy()
+                def done_prepare_blk_imgs(future):
+                    frame_idx, blk_imgs, blocks_count = future.result()
 
-            #         markers = np.asarray(all_markers[i]['checked_markers'])
-            #         blocks = np.asarray([blk[1] for blk in all_markers[i]['blocks']])
+                    assert len(blk_imgs) != 0, f'No blocks for frame {frame_idx}'
 
-            #         draw_block_code(frame1_marker, markers, blocks, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i], wrap_text=False, label_confidence_thr=0.0)
-            #         draw_block_code(frame1_marker_black, markers, blocks, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i], wrap_text=True, label_confidence_thr=0.0)
-            #         draw_block_corners(frame2_marker, markers, blocks, dataset, all_label_0_char[i], all_label_1_char[i], all_blk_dir_idx[i])
+                    nonlocal chunk_blocks_cnt
+                    chunk_blocks_cnt += blocks_count
 
-            #         block_pts = [markers[block_indices].reshape(-1, 1, 2) for block_indices in blocks]
-            #         cv2.polylines(frame_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
-            #         cv2.polylines(frame1_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
-            #         cv2.polylines(frame1_marker_black, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
-            #         cv2.polylines(frame2_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+                    label_0_char, label_1_char, blk_dir_idx = process_block_inference(frame_idx, blk_imgs, block_model, dataset.label_characters_0, dataset.label_characters_1)
 
-            #         frame_marker = utils.draw_markers(frame_marker, markers, color=255)
-            #         frame1_marker = utils.draw_markers(frame1_marker, markers, color=255)
-            #         frame1_marker_black = utils.draw_markers(frame1_marker_black, markers, color=255)
+                    assert len(label_0_char) == blocks_count and len(label_1_char) == blocks_count and len(
+                        blk_dir_idx) == blocks_count, f'Lengths dont match in Frame: {frame_idx}, Blocks: {len(blocks)}, Label_0_char: {len(label_0_char)}, Label_1_char: {len(label_1_char)}, Blk_dir: {len(blk_dir_idx)}, '
 
-            #         frame_marker = np.concatenate((
-            #             frame_marker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
-            #             frame1_marker_black[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
-            #         ), axis=1)
+                    all_block_labels[frame_idx] = (label_0_char, label_1_char, blk_dir_idx)
 
-            #         frame_marker = skimage.color.gray2rgb((frame_marker/255).astype(np.float64))
+                    fut = executor.submit(process_block_labels, frame_idx, all_markers[frame_idx]['blocks'], label_0_char, label_1_char, blk_dir_idx)
+                    fut.add_done_callback(done_block_labels)
+                    futures.append(fut)
 
-            #         out_img = (frame_marker*255).astype(np.uint8)
+                for frame_idx in range(len(c_files)):
+                    fut = executor.submit(prepare_blk_imgs, frame_idx, c_files[frame_idx], all_markers[frame_idx], dataset, device)
+                    fut.add_done_callback(done_prepare_blk_imgs)
+                    futures.append(fut)
 
-            #         if ffmpeg_process is None:
-            #             import ffmpeg
-            #             ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}').output(
-            #                 vid_path, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
-            #         ffmpeg_process.stdin.write(out_img)
+                for f in futures:
+                    f.result()
 
-            #     if ffmpeg_process is not None:
-            #         ffmpeg_process.stdin.close()
-            #         ffmpeg_process.wait()
-            #         print(f'> Render video took {(time.time() - t_video):.02f}s | Output path: "{vid_path}"')
+                # assert in subprocess process_block_labels() fails sometimes (randomly) when we dont sleep on the main thread to give everything time to wrap up.
+                # In theory, this shouldn't be needed, but some weird shenannigans happen otherwise that I dont understand...
+                time.sleep(.1)
 
-            t_chunk = time.time() - t_chunk
-            print(f'> Chunk [{c}/{chunks}] | Time: {t_chunk:.02f}s (Avg: {(t_chunk / (len(c_files))):.02f}s / frame) | Blocks: {chunk_blocks_count} (Avg: {(chunk_blocks_count / (len(c_files))):.02f} / frame) | Frames: {len(c_files)} (Cam range: [{c_first_frame}-{c_last_frame}]) <')
+                # futures.clear()
 
-    torch.cuda.empty_cache()
+                all_blocks_cnt += chunk_blocks_cnt
+
+                # gc.collect()
+                # torch.cuda.empty_cache()
+
+                for m in all_markers:
+                    for b in m['block_labels']:
+                        if b['label_confidence'] < 0.9:
+                            print(f'> Low conf label: {b["label"]}: {(b["label_confidence"]*100):.02f}%')
+
+                if output:
+                    os.makedirs(output, exist_ok=True)
+                    fn = os.path.join(output, f'cam_{utils.leading_zeros(cam_idx,3)}_chunk_{utils.leading_zeros(chunk_idx,3)}_[{chunk_first_frame}-{chunk_last_frame}]_block_labels.json')
+                    with open(fn, 'w+', 1) as f:
+                        json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+                        for frame_idx in range(len(all_markers)):
+                            assert 'block_labels' in all_markers[frame_idx], f"No block labels for frame_idx {frame_idx}"
+
+                        f.write(json_string)
+
+                    if render_video:
+
+                        print(f'> Start render video...')
+                        t_video = time.time()
+
+                        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d_%H-%M-%S-%f")
+
+                        vid_path = os.path.join(output, f'cam_{utils.leading_zeros(cam_idx,3)}_chunks_{chunk_cnt}_{timestamp}_block_labels.mp4')
+
+                        if ffmpeg_process is None:
+                            all_marker_pos = np.concatenate([m['checked_markers'] for m in all_markers if len(m['checked_markers']) > 0], axis=0)
+                            roi_min = np.maximum(0, np.floor(all_marker_pos.reshape(-1, 2).min(axis=0)).astype(int) - 100) // 2 * 2
+                            roi_max = (np.ceil(all_marker_pos.reshape(-1, 2).max(axis=0)).astype(int)) // 2 * 2 + 100
+
+                        for frame_idx, fn in enumerate(c_files):
+
+                            frame = skimage.io.imread(fn)
+                            frame = skimage.color.rgb2gray(frame)
+
+                            frame = (frame*255).astype(np.uint8)
+                            frame_marker = frame.copy()
+                            frame1_marker = frame.copy()
+                            frame1_marker_black = np.zeros_like(frame)
+                            frame2_marker = frame.copy()
+
+                            markers = np.asarray(all_markers[frame_idx]['checked_markers'])
+                            blocks = np.asarray([blk[1] for blk in all_markers[frame_idx]['blocks']])
+
+                            draw_block_code(frame1_marker, markers, blocks, all_block_labels[frame_idx][0], all_block_labels[frame_idx]
+                                            [1], all_block_labels[frame_idx][2], wrap_text=False, label_confidence_thr=0.0)
+                            draw_block_code(frame1_marker_black, markers, blocks, all_block_labels[frame_idx][0],
+                                            all_block_labels[frame_idx][1], all_block_labels[frame_idx][2], wrap_text=True, label_confidence_thr=0.0)
+                            draw_block_corners(frame2_marker, markers, blocks, dataset, all_block_labels[frame_idx][0], all_block_labels[frame_idx][1], all_block_labels[frame_idx][2])
+
+                            block_pts = [markers[block_indices].reshape(-1, 1, 2) for block_indices in blocks]
+                            cv2.polylines(frame_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+                            cv2.polylines(frame1_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+                            cv2.polylines(frame1_marker_black, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+                            cv2.polylines(frame2_marker, block_pts, True, 153, thickness=1, lineType=cv2.LINE_AA)
+
+                            frame_marker = utils.draw_markers(frame_marker, markers, color=255)
+                            frame1_marker = utils.draw_markers(frame1_marker, markers, color=255)
+                            frame1_marker_black = utils.draw_markers(frame1_marker_black, markers, color=255)
+
+                            frame_marker = np.concatenate((
+                                frame_marker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
+                                frame1_marker_black[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
+                            ), axis=1)
+
+                            # frame_marker = np.concatenate((
+                            #     frame_marker[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
+                            #     frame1_marker_black[roi_min[1]:roi_max[1], roi_min[0]:roi_max[0]],  # [:,w//2:],
+                            # ), axis=1)
+
+                            frame_marker = skimage.color.gray2rgb((frame_marker/255).astype(np.float64))
+
+                            out_img = (frame_marker*255).astype(np.uint8)
+
+                            if ffmpeg_process is None:
+                                resolution = f'{frame_marker.shape[1] if frame_marker.shape[1] % 2 == 0 else frame_marker.shape[1] + 1}x{frame_marker.shape[0] if frame_marker.shape[0] % 2 == 0 else frame_marker.shape[0] + 1}'
+                                # resolution = '1920x1080'
+                                import ffmpeg
+                                ffmpeg_process = (ffmpeg.input('pipe:', format='rawvideo', pix_fmt='rgb24', s=resolution).output(
+                                    vid_path, pix_fmt='yuv420p', loglevel="quiet").overwrite_output().run_async(pipe_stdin=True))
+                            ffmpeg_process.stdin.write(out_img)
+
+                t_chunk = time.time() - t_chunk
+                print(f'> Chunk idx [{chunk_idx+1}/{chunk_cnt}] took {t_chunk:.02f}s (Avg: {(t_chunk / (len(c_files))):.02f}s / frame) | Blocks: {chunk_blocks_cnt} (Avg: {(chunk_blocks_cnt / (len(c_files))):.02f} / frame) | Frames: {len(c_files)} (Chunk frame range: [{chunk_first_frame}-{chunk_last_frame}])\n')
+
+            all_frames_cnt += cam_frames_cnt
+
+            if ffmpeg_process is not None:
+                ffmpeg_process.stdin.close()
+                ffmpeg_process.wait()
+                print(f'> Render video took {(time.time() - t_video):.02f}s | Output path: "{vid_path}"\n')
+
+            t_cam = time.time() - t_cam
+            print(f'> Cam idx {cam_idx} took {t_cam:.02f}s (Avg: {(t_cam / cam_frames_cnt):.02f}s) | Frames: {cam_frames_cnt} (Range: [{cam_first_frame}-{cam_last_frame}])\n')
 
     t_global = time.time() - t_global
-    print(f'>>> Processed [{c}/{chunks}] chunks | Time: {t_global:.02f}s (Avg: {(t_global / (len(all_markers))):.02f}s / frame) | Blocks: {all_blocks_count} (Avg: {(all_blocks_count / (len(all_markers))):.02f} / frame) | Frames: {len(all_files)} (Cam range: [{start_frame}-{end_frame}]) <<<')
+    print(
+        f'> Processed cam idx {cam_ids} ({chunk_cnt} chunks / cam) in {t_global:.02f}s (Avg: {(t_global / all_frames_cnt):.02f}s) | Cam frame range: [{cam_first_frame}-{cam_last_frame}] | Frames: {all_frames_cnt}\n')
 
 
 if __name__ == '__main__':

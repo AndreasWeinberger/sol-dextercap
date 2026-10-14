@@ -82,20 +82,19 @@ def main():
 
     chessboard_size = tuple(map(int, args.chessboard_size.strip('()"\',').split(',')))
 
-    subfolders = os.listdir(args.input)
-    subfolders = [os.path.join(args.input, f) for f in subfolders]
+    cam_folders = os.listdir(args.input)
+    cam_folders = [os.path.join(args.input, f) for f in cam_folders]
 
-    for fn in subfolders:
-        files = os.listdir(fn)
-        files = [os.path.join(fn, f) for f in files]
+    for cam_folder in cam_folders:
+        files = os.listdir(cam_folder)
+        files = [os.path.join(cam_folder, f) for f in files]
         frames = []
 
         for frame in files:
             frames.append(cv2.imread(frame))
-        name = os.path.basename(fn)
+        name = os.path.basename(cam_folder)
         ret, intrinsic_matrix, distortion, rvecs, tvecs, errors = calibrate_camera(name, frames, chessboard_size, args.chessboard_edge_length, args.debug)
         output = os.path.join(args.output, name)
-        output += f'\\{name}'
         np.savez_compressed(f'{output}_intrinsics.npz', intrinsic_matrix=intrinsic_matrix, distortion=distortion, rvecs=rvecs, tvecs=tvecs, errors=errors)
         print(f'> Saved intrinsics to "{output}_intrinsics.npz"')
         print('---')

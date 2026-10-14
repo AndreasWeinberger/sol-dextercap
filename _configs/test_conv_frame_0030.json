@@ -1,0 +1,36 @@
+[
+    {
+        "keypoint_model": "P:/Projects/Sol/Prototypes/sol-dextercap/ckpts/0007/conv/best_lr_0.0012_bs_128_model_14_f1_score=0.7404.pt",
+        "edge_model": "P:/Projects/Sol/Prototypes/sol-dextercap/ckpts/0007/edge/best_lr_0.001_bs_1024_model_6_f1_score=0.9808.pt",
+        "block_model": "",
+        "label_file": "",
+        "marker_distance_thr": 65,
+        "marker_confidence_thr": 0.7,
+        "edge_confidence_thr": 0.7,
+        "show_heatmap": true,
+        "show_keypoints": true,
+        "kp_radius": 3,
+        "kp_thickness": 0,
+        "show_blocks": true,
+        "blk_text_height": 1,
+        "blk_text_thickness": 1,
+        "blk_text_wrap": true,
+        "files": [
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_001/multiple_videos_0030cam_001_top_cen.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_002/multiple_videos_0030cam_002_up_left.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_003/multiple_videos_0030cam_003_up_cen.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_004/multiple_videos_0030cam_004_up_right.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_005/multiple_videos_0030cam_005_mid_left_01.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_006/multiple_videos_0030cam_006_mid_left_02.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_007/multiple_videos_0030cam_007_mid_cen.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_008/multiple_videos_0030cam_008_mid_right_01.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_009/multiple_videos_0030cam_009_mid_right_02.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_010/multiple_videos_0030cam_010_low_left.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_011/multiple_videos_0030cam_011_low_cen.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_012/multiple_videos_0030cam_012_low_right.jpg",
+            "P:/Projects/Sol/Prototypes/sol-dextercap/Blender/renders/cameras_D/cam_013/multiple_videos_0030cam_013_bot_cen.jpg"
+        ],
+        "recent_configs": [],
+        "keypoint_file": ""
+    }
+]

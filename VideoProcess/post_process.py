@@ -1,5 +1,4 @@
 import numpy as np
-import json
 import matplotlib.pyplot as plt
 from .utils import load_label_patches
 import os
@@ -40,7 +39,8 @@ def remove_outliers_patch(data0, indices, max_len=0.01):
     remove_points = 0
 
     for frame in range(frame_num):
-        print(f'> Remove outliers (patch) {frame} / {frame_num}')
+        if frame % 20 == 0:
+            print(f'Remove outliers (patch) {frame} / {frame_num}')
 
         for idx in unique_classes:
             class_indices = np.where((indices == idx))[0]
@@ -110,8 +110,7 @@ def remove_outliers_patch(data0, indices, max_len=0.01):
                     original_idx = valid_indices[i]
                     data[frame, original_idx] = [-1000, -1000, -1000]
 
-    print(f'> Removed points (patch):  {remove_points} = {remove_points / frame_num} avg per frame')
-    print('---')
+    print(f'> Removed points (patch) {remove_points} (~{remove_points / frame_num} per frame) | {frame_num} frames')
     return data
 
 
@@ -136,8 +135,9 @@ def remove_outliers_window(data, discontinuity=[], window_size=30, z_threshold=2
     print(discontinuity)
 
     for i in range(len(discontinuity) - 1):
-        for frame in range(discontinuity[i], discontinuity[i+1]):
+        if i % 20 == 0:
             print(f'> Remove outliers (window) {frame} / {frame_num}')
+        for frame in range(discontinuity[i], discontinuity[i+1]):
 
             start = max(discontinuity[i], frame - window_size // 2)
             end = min(discontinuity[i+1], frame + window_size // 2 + 1)
@@ -163,8 +163,7 @@ def remove_outliers_window(data, discontinuity=[], window_size=30, z_threshold=2
                     result[frame, point] = [-1000, -1000, -1000]
                     remove_points += 1
 
-    print(f'> Removed points (window): {remove_points} = {remove_points / frame_num} avg per frame')
-    print('---')
+    print(f'Removed points (window) {remove_points} (~{remove_points / frame_num} per frame) | {frame_num} frames')
     return result
 
 
@@ -233,8 +232,11 @@ def remove_outliers_window(data, discontinuity=[], window_size=30, z_threshold=2
 #     return data
 
 
-def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -1000]):
+def interpolate_points(data, discontinuity=[], count=3, invalid_value=[-1000, -1000, -1000]):
     """
+    Count: range to look in the past and future to find valid markers for interpolation (values > 4 tend to be bad in fast moving situations, default is 3)
+    > Higher values increase number of seen markers
+    
     Args:
         data (np.ndarray): [frame_num, point_num, 3] 
         invalid_value (list): [-1000, -1000, -1000]
@@ -246,7 +248,7 @@ def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -100
     result = data.copy()
     interpolate_points = 0
     discontinuity = [0] + discontinuity + [frame_num]
-    print(discontinuity)
+    # print(discontinuity)
 
     for point in range(point_num):
         # print(f"> Interpolating point {point} / {point_num}")
@@ -256,17 +258,17 @@ def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -100
             for frame in range(start, end):
                 if np.all(data[frame, point] == invalid_value):
                     front_weight = 0
-                    for offset in [-1, -2]:
+                    for offset in range(1, count):
                         front_frame = frame + offset
                         if start <= front_frame < end and not np.all(data[front_frame, point] == invalid_value):
-                            front_weight = 3 + offset
+                            front_weight = count + offset
                             break
 
                     back_weight = 0
-                    for offset in [1, 2]:
+                    for offset in range(-1, count*-1, -1):
                         back_frame = frame + offset
                         if start <= back_frame < end and not np.all(data[back_frame, point] == invalid_value):
-                            back_weight = 3 - offset
+                            back_weight = count - offset
                             break
 
                     if front_weight and back_weight:
@@ -275,8 +277,7 @@ def interpolate_points(data, discontinuity=[], invalid_value=[-1000, -1000, -100
                         result[frame, point] = (front * front_weight + back * back_weight) / (front_weight + back_weight)
                         interpolate_points += 1
 
-    print(f"> Interpolate points: {interpolate_points} / {frame_num} = {interpolate_points / frame_num}")
-    print('---')
+    print(f"> Interpolated {interpolate_points} points (~{interpolate_points / frame_num} per frame) | {frame_num} frames")
     return result
 
 
@@ -285,23 +286,25 @@ def remove_outliers(output, markers_3d_positions_fn, indices):
 
     discontinuity = []
 
-    (avg, std, min, max) = observed_points_per_frame(data)
-    print(f'> Initial observed points - Avg: {avg} Std: {std:.02f} Min: {min} Max: {max}')
-    print('---')
+    (avg1, std1, min1, max1) = observed_points_per_frame(data)
+    print(f'> Initial observed points - Avg: {avg1} Std: {std1:.02f} Min: {min1} Max: {max1}')
 
     r1 = remove_outliers_patch(data, indices, max_len=0.01)
-    r3 = remove_outliers_window(r1, discontinuity)
+    # r3 = remove_outliers_window(r1, discontinuity)
 
-    (avg, std, min, max) = observed_points_per_frame(r3)
-    print(f'> Post observed points - Avg: {avg} Std: {std:.02f} Min: {min} Max: {max}')
+    (avg2, std2, min2, max2) = observed_points_per_frame(r1)
+    print(f'> Removed outliers patch - Avg: {avg1} -> {avg2} ({(avg2/avg1)*100:.02f}%) Std: {std1:.02f} -> {std2:.02f} ({(std2/std1)*100:.02f}%) Min: {min1} -> {min2} ({(min2/min1)*100:.02f}%) Max: {max1} -> {max2} ({(max2/max1)*100:.02f}%)')
     print('---')
 
-    r4 = interpolate_points(r3, discontinuity)
+    r4 = interpolate_points(r1, discontinuity, count=4)
+    (avg3, std3, min3, max3) = observed_points_per_frame(r4)
+    print(f'> Interpolated points - Avg: {avg1} -> {avg3} ({(avg3/avg1)*100:.02f}%) Std: {std1:.02f} -> {std3:.02f} ({(std3/std1)*100:.02f}%) Min: {min1} -> {min3} ({(min3/min1)*100:.02f}%) Max: {max1} -> {max3} ({(max3/max1)*100:.02f}%)')
+    print('---')
 
-    fn_raw = f"{output}_markers_3d_positions.npy"
+    fn_raw = f"{output}_markers_3d_positions_raw.npy"
     fn_int = f"{output}_markers_3d_positions_interpolated.npy"
 
-    np.save(fn_raw, r3)
+    np.save(fn_raw, r1)
     np.save(fn_int, r4)
     print(f'> Saved files to "{fn_raw}" and "{fn_int}"\n')
 
@@ -352,9 +355,9 @@ def observed_points_per_frame(pts):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-p', '--markers-3d-positions', default='', type=str, required=True, help='Single marker_3d_positions.npy file')
-    parser.add_argument('-l', '--label-patches', type=str, required=True, help='Single label_patches.json file')
-    parser.add_argument('-o', '--output', type=str, default='', help='Output folder')
+    parser.add_argument('-p', '--markers-3d-positions', default='./Out/synth_06/triangulation/all_markers_3d_positions.npy', type=str, help='Single marker_3d_positions.npy file')
+    parser.add_argument('-l', '--label-patches', default="./Out/synth_05/patches/all.json", type=str, help='Single label_patches.json file')
+    parser.add_argument('-o', '--output', type=str, default='./Out/synth_06/post_process', help='Output folder')
 
     args = parser.parse_args()
 

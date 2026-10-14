@@ -1,0 +1,121 @@
+{
+    "bone": "lowerarm_r",
+    "patches": [],
+    "children": [
+        {
+            "bone": "hand_r",
+            "patches": ["base_lower"],
+            "children": [
+                {
+                    "bone": "thumb_metacarpal_r",
+                    "patches": ["thumb_meta_outer", "thumb_meta_inner"],
+                    "children": [
+                        {
+                            "bone": "thumb_01_r",
+                            "patches": ["thumb_01"],
+                            "children": [
+                                {
+                                    "bone": "thumb_02_r",
+                                    "patches": ["thumb_02"],
+                                    "children": []
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "bone": "index_metacarpal_r",
+                    "patches": [],
+                    "children": [
+                        {
+                            "bone": "index_01_r",
+                            "patches": ["index_01"],
+                            "children": [
+                                {
+                                    "bone": "index_02_r",
+                                    "patches": ["index_02"],
+                                    "children": [
+                                        {
+                                            "bone": "index_03_r",
+                                            "patches": ["index_03"],
+                                            "children": []
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "bone": "middle_metacarpal_r",
+                    "patches": [],
+                    "children": [
+                        {
+                            "bone": "middle_01_r",
+                            "patches": ["middle_01"],
+                            "children": [
+                                {
+                                    "bone": "middle_02_r",
+                                    "patches": ["middle_02"],
+                                    "children": [
+                                        {
+                                            "bone": "middle_03_r",
+                                            "patches": ["middle_03"],
+                                            "children": []
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "bone": "ring_metacarpal_r",
+                    "patches": [],
+                    "children": [
+                        {
+                            "bone": "ring_01_r",
+                            "patches": ["ring_01"],
+                            "children": [
+                                {
+                                    "bone": "ring_02_r",
+                                    "patches": ["ring_02"],
+                                    "children": [
+                                        {
+                                            "bone": "ring_03_r",
+                                            "patches": ["ring_03"],
+                                            "children": []
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "bone": "pinky_metacarpal_r",
+                    "patches": ["pinky_meta"],
+                    "children": [
+                        {
+                            "bone": "pinky_01_r",
+                            "patches": ["pinky_01"],
+                            "children": [
+                                {
+                                    "bone": "pinky_02_r",
+                                    "patches": ["pinky_02"],
+                                    "children": [
+                                        {
+                                            "bone": "pinky_03_r",
+                                            "patches": ["pinky_03"],
+                                            "children": []
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

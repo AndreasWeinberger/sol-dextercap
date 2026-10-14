@@ -19,6 +19,29 @@ except ImportError:
 import subprocess
 
 
+def get_file_names_with_cam_ids(camera_ids, imgs_folder, cam_first_frame, cam_last_frame):
+    cameras = os.listdir(imgs_folder)
+    all_files = [[] for _ in range(max(camera_ids)+1)]
+    for cam_idx in camera_ids:
+        _, folder_files = folder_contents(os.path.join(imgs_folder, cameras[cam_idx]))
+        all_files[cam_idx].append(folder_files[cam_first_frame:cam_last_frame+1])
+    return all_files
+
+
+def chunk_cam_file_names(all_files, chunk_cnt, chunk_size):
+    for chunk_idx in range(len(all_files)):
+        if len(all_files[chunk_idx]) == 0:
+            continue
+
+        files = all_files[chunk_idx][0].copy()
+        all_files[chunk_idx] = []
+        for j in range(chunk_cnt):
+            start = (j)*chunk_size
+            end = min(len(files), (j+1)*chunk_size)
+            all_files[chunk_idx].append(files[start:end])
+    return all_files
+
+
 def folder_contents(base_dir: str, recursive: bool = False, files_filter_lambda=None, dirs_filter_lambda=None):
     """
     Returns directories and files that lie under @base_dir
@@ -48,6 +71,7 @@ def folder_contents(base_dir: str, recursive: bool = False, files_filter_lambda=
                 files += f
         return dirs, files
     return [], []
+
 
 def leading_zeros(number: int, min_length: int):
     s = ''

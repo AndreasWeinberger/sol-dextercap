@@ -2,65 +2,65 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from ignite.engine import Engine, Events, create_supervised_trainer, create_supervised_evaluator
-from ignite.metrics import Accuracy, Loss, MeanAbsoluteError
+from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
+from ignite.metrics import Loss
 from ignite.handlers import ModelCheckpoint, Checkpoint
 from ignite.contrib.handlers import TensorboardLogger, global_step_from_engine
 
-from torcheval.metrics.functional import binary_f1_score, binary_recall
+from torcheval.metrics.functional import binary_f1_score, binary_recall, binary_precision
 
 from .models import UNet
 from .datasets import MarkerDataset
 
-import numpy as np
 import os
-import matplotlib.pyplot as plt
 
 import argparse
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
-    torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
-    torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
-    
+    # torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
+    # torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
+
     # args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--labels', default=None, type=str, required=True, help='Path to the labels.json file containing "image" fields and annotated data')
-    parser.add_argument('--out', default='./ckpts/0001/', type=str)
-    parser.add_argument('--lr', default=0.001, type=float, required=True)
-    parser.add_argument('--batch-size', default=1024, type=int, required=True)
-    parser.add_argument('--block-size', default=96, type=int)
-    parser.add_argument('--margin', default=50, type=int)
+    parser.add_argument('--labels', default="./Data/synth_01/dataset/train_D/labels.json", type=str, help='Path to the labels.json file containing "image" fields and annotated data')
+    parser.add_argument('--out', default='./ckpts/0007/', type=str)
+    parser.add_argument('--logsubdir', default='/0007/conv', type=str)
+    parser.add_argument('--lr', default=0.0012, type=float)
+    parser.add_argument('--batch-size', default=128, type=int)
+    parser.add_argument('--block-size', default=64, type=int)
+    parser.add_argument('--margin', default=35, type=int)
     parser.add_argument('--augment', default=True, type=bool)
     parser.add_argument('--max-epochs', default=400, type=int)
     parser.add_argument('--max-num-markers', default=100, type=int)
-    parser.add_argument('--num-workers', default=4, type=int)
+    parser.add_argument('--num-workers', default=8, type=int)
     parser.add_argument('--checkpoint', default=None, type=str)
     parser.add_argument('--debug', default=False, type=bool)
 
     args = parser.parse_args()
 
-    model = UNet(output_channel=1).to(device) # OUTPUT CHANNELS CHANGED FROM 2 TO 1 --> may yield better perf during inference
+    # output_channels needs to match shape of output tensor in the _getitem_ function of the dataset
+    model = UNet(output_channel=2).to(device)  # OUTPUT CHANNELS CHANGED FROM 2 TO 1 --> may yield better perf during inference
 
     args.dataset_folder, args.labels = os.path.split(args.labels)
 
     train_loader = DataLoader(
-        MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=128*500, train=True, max_num_markers=args.max_num_markers, 
-                      output_mask_image=True, output_line_mask_image=True, augment_image=args.augment), 
+        MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=128*500, train=True, max_num_markers=args.max_num_markers,
+                      output_mask_image=True, output_line_mask_image=True, augment_image=args.augment),
         batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     val_loader = DataLoader(
-        MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=1280, train=False, max_num_markers=args.max_num_markers, 
-                      output_mask_image=True, output_line_mask_image=True, augment_image=False), 
-        batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, persistent_workers=args.num_workers > 0, pin_memory=True
+        MarkerDataset(args.dataset_folder, args.labels, block_size=args.block_size, margin=args.margin, size=1280, train=False, max_num_markers=args.max_num_markers,
+                      output_mask_image=True, output_line_mask_image=True, augment_image=False),
+        batch_size=args.batch_size, shuffle=False, num_workers=min(2, int(args.num_workers / 2)), persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     # Test model with 0.74% acc trained with eps 1e-7
     # , weight_decay=0.01
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-5)
+
     def loss_func(input: torch.Tensor, target: torch.Tensor):
         heatmap_loss = nn.functional.mse_loss(input, target*10)
         return heatmap_loss
@@ -70,18 +70,32 @@ if __name__ == "__main__":
     def accuracy_func(input: torch.Tensor, target: torch.Tensor):
         pred = input > 5
         targ = target > 0.5
-        f1 = binary_f1_score(pred.view(-1), targ.view(-1))        
+        f1 = binary_f1_score(pred.view(-1), targ.view(-1))
         return f1
 
     def recall_func(input: torch.Tensor, target: torch.Tensor):
         pred = input > 5
         targ = target > 0.5
-        
+
         return binary_recall(pred.view(-1), targ.view(-1))
-    
+
+    def precision_func(input: torch.Tensor, target: torch.Tensor):
+        pred = input > 5
+        targ = target > 0.5
+
+        return binary_precision(pred.view(-1), targ.view(-1))
+
+    def f1_func(input: torch.Tensor, target: torch.Tensor):
+        pred = input > 5
+        targ = target > 0.5
+
+        return binary_f1_score(pred.view(-1), targ.view(-1))
+
     val_metrics = {
         "accuracy": Loss(accuracy_func),
         "recall": Loss(recall_func),
+        "precision": Loss(precision_func),
+        "f1_score": Loss(f1_func),
         "loss": Loss(loss_func)
     }
 
@@ -89,8 +103,8 @@ if __name__ == "__main__":
     val_evaluator = create_supervised_evaluator(model, metrics=val_metrics, device=device)
 
     log_interval = 1
-    tb_logger = TensorboardLogger(log_dir="logger/conv")
-        
+    tb_logger = TensorboardLogger(log_dir=f"logger/{args.logsubdir}")
+
     @trainer.on(Events.ITERATION_COMPLETED(every=log_interval))
     def log_training_loss(engine):
         print(f"Epoch[{engine.state.epoch}], Iter[{engine.state.iteration}] Loss: {engine.state.output:.2f}")
@@ -99,17 +113,15 @@ if __name__ == "__main__":
     def log_validation_results(trainer):
         val_evaluator.run(val_loader)
         metrics = val_evaluator.state.metrics
-        print(f"Validation Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f} Avg recall: {metrics['recall']:.2f}")
-        
+        print(f"Validation Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f} Avg f1_score: {metrics['f1_score']:.2f} Avg recall: {metrics['recall']:.2f} Avg precision: {metrics['precision']:.2f}")
+
         tb_logger.writer.flush()
 
-
     def score_function(engine):
-        return engine.state.metrics["accuracy"]
-
+        return engine.state.metrics["f1_score"]
 
     model_checkpoint = ModelCheckpoint(
-        os.path.join(args.out,'conv'),
+        os.path.join(args.out, 'conv'),
         n_saved=1,
         filename_prefix=f'lr_{args.lr}_bs_{args.batch_size}',
         global_step_transform=global_step_from_engine(trainer),
@@ -117,20 +129,19 @@ if __name__ == "__main__":
     )
 
     best_checkpoint = ModelCheckpoint(
-        os.path.join(args.out,'conv'),
+        os.path.join(args.out, 'conv'),
         n_saved=3,
         filename_prefix=f'best_lr_{args.lr}_bs_{args.batch_size}',
         score_function=score_function,
-        score_name="acc",
+        score_name="f1_score",
         global_step_transform=global_step_from_engine(trainer),
         require_empty=False
     )
-    
-    val_evaluator.add_event_handler(Events.COMPLETED, best_checkpoint, {"model": model})
-    
-    trainer.add_event_handler(Events.EPOCH_COMPLETED, model_checkpoint, 
-                                    {'model': model, 'optimizer': optimizer, 'trainer': trainer})
 
+    val_evaluator.add_event_handler(Events.COMPLETED, best_checkpoint, {"model": model})
+
+    trainer.add_event_handler(Events.EPOCH_COMPLETED, model_checkpoint,
+                              {'model': model, 'optimizer': optimizer, 'trainer': trainer})
 
     tb_logger.attach_output_handler(
         trainer,
@@ -140,8 +151,8 @@ if __name__ == "__main__":
     )
 
     for tag, evaluator in [
-        # ("training", train_evaluator), 
-        ("validation", val_evaluator)]:
+        # ("training", train_evaluator),
+            ("validation", val_evaluator)]:
         tb_logger.attach_output_handler(
             evaluator,
             event_name=Events.EPOCH_COMPLETED,
@@ -149,16 +160,16 @@ if __name__ == "__main__":
             metric_names="all",
             global_step_transform=global_step_from_engine(trainer),
         )
-        
+
     # resume
     if not args.checkpoint is None:
         checkpoint_fp = args.checkpoint
-        checkpoint = torch.load(checkpoint_fp, map_location=device) 
+        checkpoint = torch.load(checkpoint_fp, map_location=device)
         Checkpoint.load_objects(to_load={
-            'model': model, 
-            'optimizer': optimizer, 
+            'model': model,
+            'optimizer': optimizer,
             'trainer': trainer
-            }, checkpoint=checkpoint) 
+        }, checkpoint=checkpoint)
 
     trainer.run(train_loader, max_epochs=args.max_epochs)
 

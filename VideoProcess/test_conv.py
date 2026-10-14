@@ -7,8 +7,8 @@ import scipy
 import matplotlib.pyplot as plt
 
 from . import utils
-from .models import UNet, EdgeNet
-from .datasets import EdgeDataset
+from .models import UNet, EdgeNet, BlockNet
+from .datasets import EdgeDataset, BlockCodeDataset_Base
 
 import cv2
 
@@ -20,6 +20,7 @@ import argparse
 
 
 @torch.no_grad()
+@torch.inference_mode()
 def infer_image(model: nn.Module, img: np.array, confidence_thr: float = 0.6,
                 check_half=False, device: str | torch.device = 'cuda', show_heatmap: bool = False):
     img_0 = img
@@ -99,6 +100,11 @@ def infer_image(model: nn.Module, img: np.array, confidence_thr: float = 0.6,
         plt.imshow(out_img_rotated)
         plt.show()
 
+    # asdf = cv2.GaussianBlur((out_img*255).astype(np.uint8),(3,3),0)
+    # _, binary = cv2.threshold(asdf, confidence_thr, 1, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+    # binary = cv2.adaptiveThreshold((out_img*255).astype(np.uint8),255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY,21,2)
+
     _, binary = cv2.threshold(out_img, confidence_thr, 1, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(binary.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -111,10 +117,14 @@ def infer_image(model: nn.Module, img: np.array, confidence_thr: float = 0.6,
         if M['m00'] != 0:
             cX = int(M['m10'] / M['m00'])
             cY = int(M['m01'] / M['m00'])
+        else:
+            cX = contour[0][0][0]
+            cY = contour[0][0][1]
+            print(f'> Moment at contour [{cY} {cX}] is too small with shape {contour.shape}. Adding point anyway.')
 
-            # Add the coordinates to the list
-            markers.append((cX, cY))
-            confidence.append(out_img[cY, cX])
+        # Add the coordinates to the list
+        markers.append((cX, cY))
+        confidence.append(out_img[cY, cX])
 
     # hit = val[:,:,0] > confidence_thr
     # markers = val[hit,1:]
@@ -124,9 +134,10 @@ def infer_image(model: nn.Module, img: np.array, confidence_thr: float = 0.6,
 
 
 @torch.no_grad()
+@torch.inference_mode()
 def refine_checkpoints(edge_model: nn.Module, frame: np.array, markers: np.ndarray, marker_confidence: np.ndarray,
                        edge_confidence_thr: float = 0.6, marker_distance_thr: int = 65, k_nearest: int = 8,
-                       device: str | torch.device = 'cuda', debug:bool=False):
+                       device: str | torch.device = 'cuda', debug: bool = False):
 
     if len(markers) == 0:
         return markers, []
@@ -329,16 +340,16 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
             print(f'> No markers to save!\n')
             print('---')
             return
-            
+
         # End
         t_finish_start = time.time()
         import json
         with open(f'{output}_markers.json', 'w') as f:
             json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
             open(f'{output}_markers.json', "w+", 1).write(json_string)
-            
+
             all = sum([len(frame['markers']) for frame in all_markers])
-            
+
             avg = int(all / len(all_markers))
             print(f'> Saved markers to "{output}_markers.json"\n\n\tTotal markers: {all}\n\tAvg: {avg}\n\tTime: {(time.time() - t_finish_start):.2f}s\n')
             print('---')
@@ -408,30 +419,44 @@ def infer_markers(conv_model: nn.Module, edge_model: nn.Module, input: str, outp
     print(f'> Processing markers complete\n\tTotal time: {(time.time() - t_start_global):.2f}s')
     print('---')
 
+
+def load_state_dict(fn, model, device):
+    with open(fn, 'rb') as f:
+        data = torch.load(f, map_location=device, weights_only=True)
+        if 'model' in data:
+            model.load_state_dict(data['model'])
+        else:
+            model.load_state_dict(data)
+
 class CornerLabeler:
-    def __init__(self, corner_model_fn: str, edge_model_fn: str, device: str | torch.device = 'cuda', show_heatmap: bool = True) -> None:
+    @torch.no_grad()
+    @torch.inference_mode()
+    def __init__(self, corner_model_fn: str, edge_model_fn: str, block_model_fn: str, labels_fn: str = "", device: str | torch.device = 'cuda', show_heatmap: bool = True) -> None:
         self.device = device
         self.show_heatmap = show_heatmap
+        self.roll = 0
 
         self.corner_model = UNet(output_channel=2).to(device)
-
-        with open(corner_model_fn, 'rb') as f:
-            data = torch.load(f, map_location=device, weights_only=True)
-            if 'model' in data:
-                self.corner_model.load_state_dict(data['model'])
-            else:
-                self.corner_model.load_state_dict(data)
-            self.corner_model.eval()
+        load_state_dict(corner_model_fn, self.corner_model, device)
+        self.corner_model.eval()
 
         self.edge_model = EdgeNet().to(device)
-        with open(edge_model_fn, 'rb') as f:
-            data = torch.load(f, map_location=device, weights_only=True)
-            if 'model' in data:
-                self.edge_model.load_state_dict(data['model'])
-            else:
-                self.edge_model.load_state_dict(data)
-            self.edge_model.eval()
+        load_state_dict(edge_model_fn, self.edge_model, device)
+        self.edge_model.eval()
 
+        self.block_code_dataset = None
+        self.block_model = None
+        if labels_fn != "" and os.path.isfile(labels_fn):
+            dataset_folder, labels = os.path.split(labels_fn)
+            self.block_code_dataset = BlockCodeDataset_Base(dataset_folder, labels)
+
+        if block_model_fn != "" and os.path.isfile(block_model_fn): 
+            self.block_model = BlockNet(label0_chars=len(self.block_code_dataset.label_characters_0), label1_chars=len(self.block_code_dataset.label_characters_1), blk_dirs=5).to(device)
+            load_state_dict(block_model_fn, self.block_model, device)
+            self.block_model.eval()
+
+    @torch.no_grad()
+    @torch.inference_mode()
     def label(self, image: np.ndarray, marker_confidence_thr: float = 0.75, marker_check_half_res: bool = True, edge_confidence_thr: float = 0.75, marker_distance_thr=65):
         image = np.asarray(image).squeeze()
         if image.ndim > 2:
@@ -440,7 +465,7 @@ class CornerLabeler:
         print('processing... ')
 
         t0 = time.time()
-        markers, confidence, heatmap_img = infer_image(self.corner_model, image, confidence_thr=marker_confidence_thr,
+        markers, confidence, _ = infer_image(self.corner_model, image, confidence_thr=marker_confidence_thr,
                                                        check_half=marker_check_half_res, device=self.device, show_heatmap=self.show_heatmap)
         print(f'    1st pass: found {len(markers)} corners in {time.time()-t0:0.2f} seconds.')
 
@@ -463,7 +488,53 @@ class CornerLabeler:
             correction = checked_markers_subpix - checked_markers
             print(f'    3rd pass: subpixel correction: max {np.abs(correction).max():0.4f} pixels in {time.time()-t0:0.2f} seconds.')
 
-        return markers, checked_markers_subpix, block_candidates
+        # return markers, checked_markers_subpix, block_candidates
+
+        # BLOCK NET
+        t0 = time.time()
+        if not self.block_code_dataset or not self.block_model:
+            return markers, checked_markers_subpix, block_candidates, [], [], []
+
+        markers = np.asarray(checked_markers_subpix)
+        blocks = np.asarray([blk[1] for blk in block_candidates])  # [block_num, 4]
+
+        if len(blocks) == 0:
+            return markers, checked_markers_subpix, block_candidates, [], [], []
+
+        blk_imgs = []
+        for blk in blocks:
+            corners = markers[blk, :]
+            # np.roll(corners,self.roll)
+            blk_img = self.block_code_dataset.extract_block(image, corners)
+            # blk_img.transpose()
+            blk_imgs.append(blk_img.astype(np.float32))
+        # self.roll = self.roll+1 if self.roll < 4 else 0
+
+        blk_imgs = np.stack(blk_imgs, axis=0).reshape(-1, 1, self.block_code_dataset.image_size, self.block_code_dataset.image_size)
+        blk_imgs = torch.from_numpy(blk_imgs).to(self.device)
+
+        print(f'    4th pass: using blk_imgs with shape {blk_imgs.shape} - time: {time.time()-t0:0.2f} seconds.')
+        t0 = time.time()
+        label_0, label_1, blk_dir = self.block_model(blk_imgs)
+        label_0 = torch.softmax(label_0, dim=-1)
+        label_1 = torch.softmax(label_1, dim=-1)
+        blk_dir = torch.softmax(blk_dir, dim=-1)
+
+        label_0 = label_0.cpu().numpy()
+        label_1 = label_1.cpu().numpy()
+        blk_dir = blk_dir.cpu().numpy()
+
+        label_0_idx = np.argmax(label_0, axis=-1)
+        label_1_idx = np.argmax(label_1, axis=-1)
+        blk_dir_idx = np.argmax(blk_dir, axis=-1)
+
+        label_0_char = [(self.block_code_dataset.label_characters_0[idx], label_0[i, idx]) for i, idx in enumerate(label_0_idx)]
+        label_1_char = [(self.block_code_dataset.label_characters_1[idx], label_1[i, idx]) for i, idx in enumerate(label_1_idx)]
+        blk_dir_idx = [(idx, blk_dir[i, idx]) for i, idx in enumerate(blk_dir_idx)]
+
+        print(f'    5th pass: extracted {len(label_0_char)} block labels in {time.time()-t0:0.2f} seconds.')
+
+        return markers, checked_markers_subpix, block_candidates, label_0_char, label_1_char, blk_dir_idx
 
 # Get model from a snapshot or checkpoint
 

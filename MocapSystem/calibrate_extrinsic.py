@@ -1,5 +1,7 @@
 from . import utils
 
+from VideoProcess.utils import leading_zeros
+
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -485,10 +487,7 @@ def check_reproject(reproj_pts, all_mask, start_frame, end_frame,
         print(f'> Wrote {end_frame - start_frame} check_reproj images of camera {cam_name} to "{out_folder}"')
 
 
-def calibrate_extrinsics(input: str, output: str, chessboard_size, chessboard_edge_length, train_frame_range: tuple[int, int], test_frame_range: Tuple[int, int], ground_frame_idx: int, use_saved_all_video_corners, save_check_image: bool = True, debug: bool = False):
-
-    camera_names = os.listdir(input)
-    camera_ids = [i+1 for i in range(len(camera_names))]
+def calibrate_extrinsics(input: str, intrinsics_folder:str, output: str, chessboard_size, chessboard_edge_length, train_frame_range: tuple[int, int], test_frame_range: Tuple[int, int], ground_frame_idx: int, use_saved_all_video_corners, save_check_image: bool = True, debug: bool = False):
 
     frame_range = tuple([min(train_frame_range[0], test_frame_range[0]), max(train_frame_range[1], test_frame_range[1])+1])
 
@@ -498,13 +497,16 @@ def calibrate_extrinsics(input: str, output: str, chessboard_size, chessboard_ed
     # load camera intrinsics
     camera_intrinsics = []
     camera_distortions = []
-    for name in camera_names:
-        fn = os.path.join(output, name, f'{name}_intrinsics.npz')
-        data = np.load(fn)
+    intrinsic_files = os.listdir(intrinsics_folder)
+    for fn in intrinsic_files:
+        data = np.load(os.path.join(intrinsics_folder,fn))
         camera_intrinsics.append(data['intrinsic_matrix'])
         camera_distortions.append(data['distortion'])
-    camera_intrinsics = np.asarray(camera_intrinsics).reshape(len(camera_names), 3, 3)
-    camera_distortions = np.asarray(camera_distortions).reshape(len(camera_names), -1)
+    camera_intrinsics = np.asarray(camera_intrinsics).reshape(len(intrinsic_files), 3, 3)
+    camera_distortions = np.asarray(camera_distortions).reshape(len(intrinsic_files), -1)
+
+    camera_names = os.listdir(input)
+    camera_ids = tuple(int(str(fn).split('_')[1]) for fn in intrinsic_files)
 
     # load origin images and make an initial guess of the camera extrinsics
     (ground_obj_points, ground_img_points, cam_rvecs_init, cam_tvecs_init) = extract_ground_coord(
@@ -630,7 +632,7 @@ def calibrate_extrinsics(input: str, output: str, chessboard_size, chessboard_ed
     os.makedirs(output, exist_ok=True)
     for idx, name in enumerate(camera_names):
         np.savez_compressed(
-            os.path.join(output, name, f'{name}_extrinsics.npz'),
+            os.path.join(output, f'{name}_extrinsics.npz'),
             distorts=camera_distortions[idx],
             intrinsics=camera_intrinsics[idx],
             rmats=new_rmats[idx],
@@ -653,6 +655,7 @@ def calibrate_extrinsics(input: str, output: str, chessboard_size, chessboard_ed
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--input', default='', type=str, required=True)
+    parser.add_argument('--intrinsics-folder', default='', type=str, required=True)
     parser.add_argument('-o', '--output', type=str, required=True)
     parser.add_argument('--chessboard-size', type=str, help='Number of inner corner points as tuple (n,m), note there should be no space', default='(7,10)')
     parser.add_argument('--chessboard-edge-length', type=float, help='length of chessboard edges, in meter', default=0.02)
@@ -674,6 +677,7 @@ def main():
     test_frame_range = tuple(map(int, args.test_frame_range.strip('()"\',').split(',')))
 
     print(f'> Input: {args.input}')
+    print(f'> Intrinsics-Folder: {args.intrinsics_folder}')
     print(f'> Output: {args.output}')
     print(f'> Chessboard size: {chessboard_size}')
     print(f'> Chessboard edge length: {args.chessboard_edge_length}')
@@ -684,7 +688,7 @@ def main():
 
     t0 = time.time()
 
-    calibrate_extrinsics(args.input, args.output, chessboard_size, args.chessboard_edge_length, train_frame_range,
+    calibrate_extrinsics(args.input, args.intrinsics_folder, args.output, chessboard_size, args.chessboard_edge_length, train_frame_range,
                          test_frame_range, args.ground_frame, args.use_saved_all_video_corners, args.save_check_image, args.debug)
     print('---')
 

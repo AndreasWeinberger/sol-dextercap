@@ -15,10 +15,6 @@ from PyQt5.QtWidgets import (
     QMenu, QAction, QFrame
 )
 
-import PIL.Image
-import PIL.ImageFont
-import PIL.ImageDraw
-
 import pyqtgraph as pg
 import qimage2ndarray
 
@@ -30,7 +26,6 @@ import os
 import sys
 import pathlib
 import json
-import platform
 from functools import partial
 
 from typing import Tuple, Dict, List, Any, Union
@@ -431,7 +426,7 @@ class BlockAnnotatorWidget(QDialog):
         button.setFixedWidth(200)
         button.clicked.connect(self.accept)
         button.setDefault(True)
-        button.setEnabled(False)
+        # button.setEnabled(False)
         self.labelEditor.textChanged.connect(partial(button.setEnabled, True))
         layout.addWidget(button)
 
@@ -541,7 +536,8 @@ class BlockAnnotatorWidget(QDialog):
         # { 'image': array, 'labels': [], 'direction': int }
         image = self.image
         if self.direction > 0:
-            options = [0, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]
+            options = [0, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE, 0]
+            # if self.direction in options:
             image = cv2.rotate(image, options[self.direction])
 
         image = image.transpose((1, 0, 2))
@@ -575,6 +571,7 @@ class BlockAnnotatorWidget(QDialog):
 
 class AnnotatorWidget(QWidget):
     sigKeyPointChanged = pyqtSignal(int, dict, name='keypointChanged')
+    sigStatusMessage = pyqtSignal(str, name='statusMessage')
 
     help_msg = '''
 1. Open a video/image file using File -> Open (Ctrl+O)
@@ -596,7 +593,7 @@ class AnnotatorWidget(QWidget):
 
         self.image_item.sigMouseClickedImage.connect(self.on_image_click_event)
         self.image_item.sigMouseDoubleClickedImage.connect(self.on_image_double_click_event)
-        #self.image_item.sigMouseDraggedImage.connect(self.on_image_dragged_event)
+        # self.image_item.sigMouseDraggedImage.connect(self.on_image_dragged_event)
 
         layout = QHBoxLayout()
         self.setLayout(layout)
@@ -612,9 +609,10 @@ class AnnotatorWidget(QWidget):
 
         self.video_fn = ''
 
-        self.marker_distance_thr: int | float = 150
+        self.marker_distance_thr: int | float = 65
         self.marker_confidence_thr: int | float = 0.7
-        self.edge_confidence_thr: int | float = 0.6
+        self.edge_confidence_thr: int | float = 0.7
+        self.label_confidence_thr: int | float = 0.7
         self.kp_radius: int | float = 6
         self.kp_thickness: int | float = 1
 
@@ -631,6 +629,8 @@ class AnnotatorWidget(QWidget):
         self.auto_labeler: CornerLabeler = None
         self.keypoint_model: str = ''
         self.edge_model: str = ''
+        self.block_model: str = ''
+        self.label_file: str = ''
 
     def open_video(self, file_names: List[str]):
         if len(file_names) == 1:
@@ -684,7 +684,8 @@ class AnnotatorWidget(QWidget):
         if len(file_names) == 0:
             return
 
-        file_names = sorted(file_names, key=lambda fn: os.path.basename(fn))
+        if len(file_names) > 1:
+            file_names = sorted(file_names, key=lambda fn: os.path.basename(fn))
         self.keypoints_of_frame = {}
 
         base_frame_indices = [0]
@@ -692,6 +693,8 @@ class AnnotatorWidget(QWidget):
             base_frame_indices.extend(np.cumsum(self.dataloader.sub_loader_frames).tolist())
 
         for fn_idx, fn in enumerate(file_names):
+            if not os.path.isfile(fn):
+                continue
             with open(fn, 'r') as f:
                 data = json.load(f)
 
@@ -981,6 +984,22 @@ class AnnotatorWidget(QWidget):
                 self.remove_closed_keypoint(x, y)
             else:
                 self.add_keypoint(x, y)
+        elif modifiers & Qt.AltModifier:
+            for blk in self.keypoints_of_frame[self.current_frame_idx]['blocks']:
+                keypoints_np = np.array(blk['corners'])
+
+                margin = 0
+                h, w = self.current_frame.shape[:2]
+                xy_min = np.maximum(0, np.floor(keypoints_np.min(axis=0)).astype(int) - margin)
+                xy_max = np.minimum((h - 1, w - 1), np.ceil(keypoints_np.max(axis=0)).astype(int) + margin)
+                mask = np.logical_and(xy_min < [x, y], [x,y] < xy_max)
+                
+                if mask.all() == True:
+                    # print(f'> Selected Block Label "{blk["label"]}" Corners: {blk["corners"]}')
+                    self._selected_keypoints = [tuple(c) for c in blk['corners']]
+                    self._update_image()
+                    self.add_block()
+                    break
         else:
             self.select_closed_keypoint(x, y)
 
@@ -1014,6 +1033,7 @@ class AnnotatorWidget(QWidget):
             self.keypoints_of_frame[self.current_frame_idx]['keypoints'].append((x, y))
 
         self._selected_keypoints = [(x, y)]
+        self.sigStatusMessage.emit(f'> Added [{len(self.keypoints_of_frame[self.current_frame_idx]["keypoints"])-1}] ({int(x)} , {int(y)})')
 
         if notify:
             self._update_image()
@@ -1047,6 +1067,7 @@ class AnnotatorWidget(QWidget):
         ret = self.get_closed_keypoint(x, y, threshold=threshold, num_points=num_points)
         if ret is None or len(ret) == 0:
             self._selected_keypoints.clear()
+            self.sigStatusMessage.emit('> Clear')
         else:
             if replace:
                 self._selected_keypoints.clear()
@@ -1056,6 +1077,7 @@ class AnnotatorWidget(QWidget):
                     self._selected_keypoints.remove(_pt)
                 else:
                     self._selected_keypoints.append(tuple(_pt))
+                    self.sigStatusMessage.emit(f'> Selected [{_idx}] ({int(_pt[0])} , {int(_pt[1])})')
             # print(self._selected_keypoints)
         self._update_image()
 
@@ -1073,7 +1095,7 @@ class AnnotatorWidget(QWidget):
         selected_keypoints = self._selected_keypoints[:]
         for pt in selected_keypoints:
             self.remove_keypoint(pt[0], pt[1], notify=False)
-
+        self.sigStatusMessage.emit(f'> Removed {len(selected_keypoints)} keypoints')
         self._update_image()
         self.sigKeyPointChanged.emit(self.current_frame_idx, self.keypoints_of_frame)
 
@@ -1084,6 +1106,7 @@ class AnnotatorWidget(QWidget):
 
         pt = (x, y)
         self.keypoints_of_frame[self.current_frame_idx]['keypoints'].remove(pt)
+        self.sigStatusMessage.emit(f'> Removed ({int(x)} , {int(y)})')
 
         # remove pt from selection
         if pt in self._selected_keypoints:
@@ -1359,7 +1382,8 @@ class AnnotatorWidget(QWidget):
             return
 
         # raw_markers, markers, blocks = self.auto_labeler.label(self.current_frame, 0.0, False, 0.0)
-        raw_markers, markers, blocks = self.auto_labeler.label(self.current_frame, self.marker_confidence_thr, True, self.edge_confidence_thr, self.marker_distance_thr)
+        raw_markers, markers, blocks, label_0_char, label_1_char, blk_dir_idx = self.auto_labeler.label(
+            self.current_frame, self.marker_confidence_thr, True, self.edge_confidence_thr, self.marker_distance_thr)
         markers = np.asarray(markers, dtype=float)
         raw_markers = np.asarray(raw_markers, dtype=float)
 
@@ -1372,8 +1396,17 @@ class AnnotatorWidget(QWidget):
         for mk in markers:
             self.add_keypoint(mk[1], mk[0], notify=False)
 
-        for (area, corner_indices) in blocks:
+        for idx, (area, corner_indices) in enumerate(blocks):
             self.select_keypoints(markers[list(corner_indices)][:, [1, 0]].tolist(), notify=False)
+            if len(label_0_char) > idx:
+                confidences = (label_0_char[idx][1], label_1_char[idx][1], blk_dir_idx[idx][1])
+                label = label_0_char[idx][0] + label_1_char[idx][0]
+                dir = blk_dir_idx[idx][0]
+                if (sum(confidences) / 3) > self.label_confidence_thr:
+                    self.add_block('*' if label == '**' else label, dir, notify=False)
+                    continue
+                else:
+                    print(f'> Label "{label}" has < {self.label_confidence_thr} confidence: {confidences}')
             self.add_block('', 0, notify=False)
 
         # add raw markers that are not used by blocks
@@ -1389,6 +1422,35 @@ class AnnotatorWidget(QWidget):
         self.sigKeyPointChanged.emit(self.current_frame_idx, self.keypoints_of_frame)
 
         return len(raw_markers), len(markers), len(blocks)
+
+    def find_label(self, label: str, exact_match: bool = False):
+        matches = [[] for _ in range(len(self.keypoints_of_frame))]
+        for frame_idx in range(len(self.keypoints_of_frame)):
+            for blk_idx, blk in enumerate(self.keypoints_of_frame[frame_idx]['blocks']):
+                if exact_match:
+                    if blk['label'] == label:
+                        matches[frame_idx].append((blk['label'], blk_idx))
+                else:
+                    if label in blk['label']:
+                        matches[frame_idx].append((blk['label'], blk_idx))
+        return matches
+
+    def replace_label(self, old_label: str, new_label: str, exact_match: bool = False):
+        matches = self.find_label(old_label, exact_match)
+        for frame_idx in range(len(matches)):
+            for blk, idx in matches[frame_idx]:
+                self.keypoints_of_frame[frame_idx]['blocks'][idx]['label'] = blk.replace(old_label, new_label)
+        return matches
+
+    def find_occurences(self, min_occurences_cnt: int = 5):
+        occurences = {}
+        for frame_idx in range(len(self.keypoints_of_frame)):
+            for blk in self.keypoints_of_frame[frame_idx]['blocks']:
+                if blk['label'] not in occurences:
+                    occurences[blk['label']] = 0
+                occurences[blk['label']] += 1
+
+        return dict(filter(lambda i: i[1] < min_occurences_cnt, occurences.items()))
 
 
 class Window(QMainWindow):
@@ -1415,6 +1477,7 @@ class Window(QMainWindow):
         self.status = QStatusBar()
         self.status.showMessage('Init')
         self.setStatusBar(self.status)
+        self.annotator.sigStatusMessage.connect(self.status.showMessage)
 
     def _createTimeLine(self):
         timeline_toolbar = QToolBar()
@@ -1518,16 +1581,9 @@ class Window(QMainWindow):
         menu.addSeparator()
         menu.addAction("&Exit", self.close)
 
-        def selectRecentConfig():
-            for a in recentConfigsMenu.actions():
-                if a.hovered:
-                    self.selectedRecentConfigAction = a
-                    break
-
         def loadSelectedRecentConfig():
-            if self.selectedRecentConfigAction:
-                if self.selectedRecentConfigAction.text != '':
-                    self.load_config(self.selectedRecentConfigAction.text())
+            path = recentConfigsMenu.sender().property("path")
+            self.load_config(path)
 
         def fillRecentConfigs():
             path = os.path.join('', '_configs')
@@ -1541,8 +1597,8 @@ class Window(QMainWindow):
             if files != '':
                 recentConfigsMenu.clear()
                 for file in files:
-                    a = recentConfigsMenu.addAction(os.path.join(path, file.name))
-                    a.hovered.connect(selectRecentConfig)
+                    a = recentConfigsMenu.addAction(f'{file.name}\t{file.path}')
+                    a.setProperty("path", file.path)
                     a.triggered.connect(loadSelectedRecentConfig)
 
         recentConfigsMenu.aboutToShow.connect(fillRecentConfigs)
@@ -1551,10 +1607,13 @@ class Window(QMainWindow):
             self.heatmapAction.setChecked(self.annotator._show_heatmap)
             self.loadKeypointModelAction.setText(f'Load Keypoint Model - Current: {self.annotator.keypoint_model}')
             self.loadEdgeModelAction.setText(f'Load Edge Model - Current: {self.annotator.edge_model}')
+            self.loadBlockModelAction.setText(f'Load Block Model - Current: {self.annotator.block_model}')
+            self.loadLabelFileAction.setText(f'Load Label File - Current: {self.annotator.label_file}')
 
             self.setMarkerDistanceThrAction.setText(f'Set Marker Distance Threshold - Current: {self.annotator.marker_distance_thr}')
             self.setMarkerConfidenceThrAction.setText(f'Set Marker Confidence Threshold - Current: {self.annotator.marker_confidence_thr}')
             self.setEdgeConfidenceThrAction.setText(f'Set Edge Confidence Threshold - Current: {self.annotator.edge_confidence_thr}')
+            self.setEdgeConfidenceThrAction.setText(f'Set Label Confidence Threshold - Current: {self.annotator.label_confidence_thr}')
 
         def menuViewUpdate():
             self.viewAction.setChecked(self.annotator._show_keypoints)
@@ -1581,6 +1640,7 @@ class Window(QMainWindow):
 
         def deselect_all():
             self.annotator._selected_keypoints = []
+            self.annotator.sigStatusMessage.emit(f'> Clear')
             self.annotator._update_image()
 
         deselectAllAction.triggered.connect(deselect_all)
@@ -1597,10 +1657,10 @@ class Window(QMainWindow):
         addBlockAction.setShortcuts({'B', 'Ctrl+B'})
         addBlockAction.triggered.connect(self.annotator.add_block)
 
-        markBlockAction = menu.addAction('>    &Mark Block')
-        markBlockAction.setVisible(True)
-        markBlockAction.setShortcuts({'G', 'Ctrl+G'})
-        markBlockAction.triggered.connect(partial(self.annotator.add_block, block_label='', block_direction=0))
+        # markBlockAction = menu.addAction('>    &Mark Block')
+        # markBlockAction.setVisible(True)
+        # markBlockAction.setShortcuts({'G', 'Ctrl+G'})
+        # markBlockAction.triggered.connect(partial(self.annotator.add_block, block_label='', block_direction=0))
 
         addBlackBlockAction = menu.addAction('>    Add Bla&ck Block')
         addBlackBlockAction.setVisible(True)
@@ -1644,7 +1704,7 @@ class Window(QMainWindow):
         self.loadKeypointModelAction.setVisible(True)
 
         def load_keypoint_model():
-            self.annotator.keypoint_model = self.load_model('Load Keypoint Model')
+            self.annotator.keypoint_model = self.choose_file_dialog('Load Keypoint Model')
             self.annotator.auto_labeler = None
         self.loadKeypointModelAction.triggered.connect(load_keypoint_model)
 
@@ -1652,9 +1712,25 @@ class Window(QMainWindow):
         self.loadEdgeModelAction.setVisible(True)
 
         def load_edge_model():
-            self.annotator.edge_model = self.load_model('Load Edge Model')
+            self.annotator.edge_model = self.choose_file_dialog('Load Edge Model')
             self.annotator.auto_labeler = None
         self.loadEdgeModelAction.triggered.connect(load_edge_model)
+
+        self.loadBlockModelAction = menu.addAction(f'Load Block Model - Current: {self.annotator.block_model}')
+        self.loadBlockModelAction.setVisible(True)
+
+        def load_block_model():
+            self.annotator.block_model = self.choose_file_dialog('Load Block Model (optional)')
+            self.annotator.auto_labeler = None
+        self.loadBlockModelAction.triggered.connect(load_block_model)
+
+        self.loadLabelFileAction = menu.addAction(f'Load Label File - Current: {self.annotator.label_file}')
+        self.loadLabelFileAction.setVisible(True)
+
+        def load_label_file():
+            self.annotator.label_file = self.choose_file_dialog('Load Label File', filter=('Label files (*.json);;All files (*.*)'))
+            self.annotator.auto_labeler = None
+        self.loadLabelFileAction.triggered.connect(load_label_file)
 
         menu.addSeparator()
 
@@ -1668,28 +1744,40 @@ class Window(QMainWindow):
 
         self.setMarkerDistanceThrAction.triggered.connect(set_marker_distance_threshold)
 
+        # marker confidence thr
         self.setMarkerConfidenceThrAction = menu.addAction(f'Set Marker Confidence Threshold - Current: {self.annotator.marker_confidence_thr}')
         self.setMarkerConfidenceThrAction.setVisible(True)
 
         def set_marker_confidence_threshold():
-            val, ret1 = QInputDialog.getDouble(self, 'Marker Confidence Threshold', 'Threshold (def.: 0.75)', self.annotator.marker_confidence_thr, decimals=4)
+            val, ret1 = QInputDialog.getDouble(self, 'Marker Confidence Threshold', 'Threshold (def.: 0.70)', self.annotator.marker_confidence_thr, decimals=4)
             if ret1:
                 self.annotator.marker_confidence_thr = val
 
         self.setMarkerConfidenceThrAction.triggered.connect(set_marker_confidence_threshold)
 
+        # edge confidence thr
         self.setEdgeConfidenceThrAction = menu.addAction(f'Set Edge Confidence Threshold - Current: {self.annotator.edge_confidence_thr}')
         self.setEdgeConfidenceThrAction.setVisible(True)
 
         def set_edge_confidence_threshold():
-            val, ret1 = QInputDialog.getDouble(self, 'Edge Confidence Threshold', 'Threshold (def.: 0.75)', self.annotator.edge_confidence_thr, decimals=4)
+            val, ret1 = QInputDialog.getDouble(self, 'Edge Confidence Threshold', 'Threshold (def.: 0.70)', self.annotator.edge_confidence_thr, decimals=4)
             if ret1:
                 self.annotator.edge_confidence_thr = val
 
         self.setEdgeConfidenceThrAction.triggered.connect(set_edge_confidence_threshold)
 
+        # label confidence thr
+        self.setLabelConfidenceThrAction = menu.addAction(f'Set Label Confidence Threshold - Current: {self.annotator.label_confidence_thr}')
+        self.setLabelConfidenceThrAction.setVisible(True)
+
+        def set_label_confidence_threshold():
+            val, ret1 = QInputDialog.getDouble(self, 'Label Confidence Threshold', 'Threshold (def.: 0.70)', self.annotator.label_confidence_thr, decimals=4)
+            if ret1:
+                self.annotator.label_confidence_thr = val
+
+        self.setLabelConfidenceThrAction.triggered.connect(set_label_confidence_threshold)
+
         loadLabelCandidatesAction = menu.addAction('>    Load Label &Candidate')
-        loadLabelCandidatesAction.setVisible(False)
         loadLabelCandidatesAction.triggered.connect(self.load_label_candidates)
 
         menu = self.menuBar().addMenu("&View")
@@ -1702,6 +1790,79 @@ class Window(QMainWindow):
         # def refresh():
         #     self.annotator._update_image()
         # refreshAction.triggered.connect(refresh)
+
+        menu.addSeparator()
+
+        def find_block_label_exact():
+            find_block_label(True)
+
+        # Find block label
+        def find_block_label(exact_match: bool = False):
+            val, ret1 = QInputDialog.getText(self, 'Find label', 'Label (max. 2 chars)')
+            val = val.strip().upper()
+            if ret1:
+                found_labels = self.annotator.find_label(val, exact_match)
+                found_labels_cnt = sum(len(l) for l in found_labels)
+                if found_labels_cnt > 0:
+                    found_str = ''
+                    for i in range(len(found_labels)):
+                        for label, _ in found_labels[i]:
+                            found_str += f'> Frame idx {i}: Label "{label}"\n'
+                    QMessageBox.information(self, f'Found "{val}" in {found_labels_cnt} frames', f'Label "{val}" was found in\n\n{found_str}',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+                else:
+                    QMessageBox.information(self, f'Not Found', f'Could not find label "{val}" in any frame!',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+        # Replace block labels
+
+        def replace_labels():
+            val_find, ret_find = QInputDialog.getText(self, 'Find', 'Find Label (max. 2 chars)')
+            if not ret_find:
+                return
+            val_replace, ret_replace = QInputDialog.getText(self, 'Replace', 'Replace Label (max. 2 chars)')
+            val_replace = val_replace.strip().upper()
+            if ret_replace:
+                replaced_labels = self.annotator.replace_label(val_find, val_replace, False)
+
+                replaced_labels_cnt = sum(len(l) for l in replaced_labels)
+                if replaced_labels_cnt > 0:
+                    found_str = ''
+                    for i in range(len(replaced_labels)):
+                        for j in replaced_labels[i]:
+                            found_str += f'> Frame idx {i}: Label "{j}"\n'
+                    QMessageBox.information(self, f'Replaced "{val_find}" with "{val_replace}" in {replaced_labels} frames', found_str,
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+                else:
+                    QMessageBox.information(self, f'Not Found', f'Could not find label "{val_find}" in any frame!',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+
+        # Find block label
+        def find_occurences():
+            val, ret1 = QInputDialog.getInt(self, 'Occurences', 'Min Occurences', 5, 1)
+            if ret1:
+                too_low = self.annotator.find_occurences(val)
+                if len(too_low) > 0:
+                    found_str = ''
+                    for k, v in too_low.items():
+                        found_str += f'> Label: "{k}" found {v} times\n'
+                    QMessageBox.information(self, f'{len(too_low)} labels occur < {val} times', f'{len(too_low)} labels occur < {val} times\n\n{found_str}',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+                else:
+                    QMessageBox.information(self, f'None filtered', f'Each label found at least {val} times!',
+                                            QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
+
+        self.find_label = menu.addAction('Find Label')
+        self.find_label.triggered.connect(find_block_label)
+        self.find_label.setShortcuts({'CTRL+F'})
+        self.find_label_exact = menu.addAction('Find Label (exact match)')
+        self.find_label_exact.triggered.connect(find_block_label_exact)
+        self.find_label_exact.setShortcuts({'CTRL+G'})
+        self.replace_label = menu.addAction('Replace Label')
+        self.replace_label.triggered.connect(replace_labels)
+        self.replace_label.setShortcuts({'CTRL+R'})
+        self.find_occurences = menu.addAction('Find Occurences')
+        self.find_occurences.triggered.connect(find_occurences)
+        self.find_occurences.setShortcuts({'CTRL+H'})
 
         menu.addSeparator()
         self.viewAction = menu.addAction('Show &Keypoints')
@@ -1801,21 +1962,26 @@ class Window(QMainWindow):
 
         if self.annotator.auto_labeler is None:
             if self.annotator.keypoint_model == '':
-                self.annotator.keypoint_model = self.load_model('Load Keypoint Model')
+                self.annotator.keypoint_model = self.choose_file_dialog('Load Keypoint Model')
 
             if self.annotator.edge_model == '':
-                self.annotator.edge_model = self.load_model('Load Edge Model')
+                self.annotator.edge_model = self.choose_file_dialog('Load Edge Model')
 
             if self.annotator.keypoint_model == '' or self.annotator.edge_model == '':
                 btn = QMessageBox.critical(self, 'Failed', 'Failed to setup auto labeler!', QMessageBox.StandardButton.Close, QMessageBox.StandardButton.Close)
                 return
-            else:
-                self.annotator.auto_labeler = CornerLabeler(self.annotator.keypoint_model, self.annotator.edge_model, device='cuda', show_heatmap=self.annotator._show_heatmap)
+            # if self.annotator.block_model == '':
+            #     self.annotator.block_model = self.choose_file_dialog('Load Block Model (optional)')
+            # if self.annotator.block_model != '' and self.annotator.label_file == '':
+            #     self.annotator.label_file = self.choose_file_dialog('Choose Label File',('JSON (*.json *.JSON);;All files (*.*)'))
+
+            self.annotator.auto_labeler = CornerLabeler(self.annotator.keypoint_model, self.annotator.edge_model, self.annotator.block_model,
+                                                        self.annotator.label_file, device='cuda', show_heatmap=self.annotator._show_heatmap)
 
         raw_markers, markers, blocks = self.annotator.auto_label()
         QMessageBox.information(self, 'Auto Label Keypoints', f'Raw Markers: {raw_markers}, Refined Markers: {markers}, Blocks: {blocks}', QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
 
-    def load_model(self, title: str = 'Load Model', filter: str = ('Model (*.pth *.pt);;All files (*.*)')):
+    def choose_file_dialog(self, title: str = 'Load Model', filter: str = ('Model (*.pth *.pt);;All files (*.*)')):
         model_fn, _ = QFileDialog.getOpenFileName(self, title, filter=filter)
         self.status.showMessage(f'Loaded Model: {model_fn}')
         return model_fn
@@ -1834,7 +2000,7 @@ class Window(QMainWindow):
 
     def save(self, save_as: bool = False):
         if self.keypoint_file is None or save_as:
-            fn, _ = QFileDialog.getSaveFileName(self, 'Load Annotation',
+            fn, _ = QFileDialog.getSaveFileName(self, 'Save Annotation',
                                                 filter=('Annotation files (*.json);;All files (*.*)'))
 
             if fn == '':
@@ -1863,8 +2029,10 @@ class Window(QMainWindow):
         with open(fn, 'r') as f:
             data = json.load(f)
 
-            self.annotator.keypoint_model = data[0]["keypoint_model"]
-            self.annotator.edge_model = data[0]["edge_model"]
+            self.annotator.keypoint_model = data[0]["keypoint_model"] if "keypoint_model" in data[0] else ''
+            self.annotator.edge_model = data[0]["edge_model"] if "edge_model" in data[0] else ''
+            self.annotator.block_model = data[0]["block_model"] if "block_model" in data[0] else ''
+            self.annotator.label_file = data[0]["label_file"] if "label_file" in data[0] else ''
             self.annotator.auto_labeler = None
 
             self.annotator.marker_distance_thr = data[0]["marker_distance_thr"]
@@ -1881,6 +2049,10 @@ class Window(QMainWindow):
 
             if "files" in data[0]:
                 self.open(data[0]["files"])
+            self.keypoint_file = data[0]['keypoint_file']
+            if "keypoint_file" in data[0]:
+                if data[0]["keypoint_file"] != '' and data[0]["keypoint_file"] != None:
+                    self.annotator.load_keypoints([self.keypoint_file])
             if "recent_configs" in data[0]:
                 self.recent_configs = data[0]["recent_configs"]
 
@@ -1905,6 +2077,8 @@ class Window(QMainWindow):
 
         data = [{'keypoint_model': self.annotator.keypoint_model,
                  'edge_model': self.annotator.edge_model,
+                 'block_model': self.annotator.block_model,
+                 'label_file': self.annotator.label_file,
                  'marker_distance_thr': self.annotator.marker_distance_thr,
                  'marker_confidence_thr': self.annotator.marker_confidence_thr,
                  'edge_confidence_thr': self.annotator.edge_confidence_thr,
@@ -1917,7 +2091,8 @@ class Window(QMainWindow):
                  'blk_text_thickness': self.annotator.blk_text_thickness,
                  'blk_text_wrap': self.annotator.blk_text_wrap,
                  'files': files,
-                 'recent_configs': self.recent_configs
+                 'recent_configs': self.recent_configs,
+                 'keypoint_file': self.keypoint_file if self.keypoint_file != None else ''
                  }]
 
         with open(fn, 'w') as f:

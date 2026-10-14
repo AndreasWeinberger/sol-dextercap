@@ -1,0 +1,8 @@
+import bpy
+    
+c = n = bpy.context.object
+
+n = c.name
+M = c.matrix_basis
+    
+print(f'\n> Name: {n}\n{[list(r) for r in M]}')

@@ -7,7 +7,8 @@ import torch
 import torchvision.transforms.v2 as torch_trans
 import json
 
-import utils
+from . import utils
+# import utils
 import matplotlib.pyplot as plt
 import cv2
 import itertools
@@ -388,6 +389,7 @@ class MarkerDataset:
                 plt.imshow(np.minimum(block + output_line_img, 1))
 
             output = np.stack((output_img, output_line_img), axis=0)
+            # output = output_img.reshape(1,self.block_size,self.block_size)
 
         block = torch.from_numpy(block.astype(np.float32)).reshape(1, self.block_size, self.block_size)
         output = torch.as_tensor(output, dtype=torch.float32)
@@ -946,8 +948,10 @@ def test_marker(dataset_folder: str, dataset_file: str = "labels.json", block_si
     for i in range(count):
         block, output = dataset[i]
         if debug:
-            print(block, output)
-            plt.imshow(block.numpy()[0], cmap='gray', vmin=0, vmax=1)
+            print(f'> block: {block}\n')
+            print(f'> output: {output}')
+            plt.imshow(output.numpy()[0], cmap='gray', vmin=0, vmax=1)
+            # plt.imshow(block.numpy()[0], cmap='gray', vmin=0, vmax=1)
             plt.show()
 
 
@@ -1000,8 +1004,8 @@ def test_edge(dataset_folder: str, dataset_file: str = "labels.json", count: int
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--type', default=0, type=int, required=True, help='"marker", "edge" or "block"')
-    parser.add_argument('--labels', default='', type=str, required=True, help='The dataset file')
+    parser.add_argument('--type', default=0, type=int, help='"marker", "edge" or "block"')
+    parser.add_argument('--labels', default='./Data/synth_01/dataset/train_D/labels.json', type=str, help='The dataset file')
     parser.add_argument('--count', default=5, type=int, help='Number of elements to pull')
     parser.add_argument('--block-size', default=96, type=int)
     parser.add_argument('--margin', default=50, type=int)

@@ -1,10 +1,7 @@
-import json
-import numpy as np
 import time
-import utils
-import argparse
-import os
-import concurrent.futures
+from .utils import leading_zeros, folder_contents, get_file_names_with_cam_ids, chunk_cam_file_names
+from os import makedirs
+from os.path import join
 import json
 
 
@@ -247,6 +244,7 @@ def process_frame(frame, patches, inversed_patches):
         new_label_direction = max(block_label_candidates[i], key=block_label_candidates[i].get)
         voter = block_label_candidates[i][new_label_direction]
         if voter == 1 and len(block_label_candidates[i]) > 1:
+            print(f'> Deleted: {block_label_candidates[i]}')
             deleted_num += 1
             continue
 
@@ -280,70 +278,115 @@ def main():
     # parser.add_argument('--refined', default=True, type=bool, help='Whether to use refined markers files. Look for "_refined_markers.json" instead of "_markers.json"')
     # args = parser.parse_args()
 
-    start_frame = 0
-    end_frame = 99
-    workers = 12
-    chunk_size = 92
-
     t_global = time.time()
 
-    markers_chunks_folder = "./Out/synth_01/refined_markers/"
-    _, markers_chunks_files = utils.folder_contents(markers_chunks_folder, True, files_filter_lambda=lambda x: x.endswith('.json'))
+    # Tuple of ids e.g.: (0,1,2,3,4,5,6) or (0,) for only cam_idx 0
+    cam_ids = "0,1,2,3,4,5,6,7,8,9,10,11,12"
+    cam_first_frame = 0
+    cam_last_frame = 199
+    workers = 12
+    chunk_size = 64
+    render_video = False
 
-    patches_fn = "./Out/synth_01/patches/all_patches.json"
+    chunks_folder = "./Out/synth_06/refined_markers/"
+    patches_fn = "./Out/synth_05/patches/all.json"
     patches, inversed_patches = load_patches(patches_fn)
 
-    input = "./Blender/renders/cameras/"
-    all_files = []
-    for cam in os.listdir(input):
-        _, folder_files = utils.folder_contents(os.path.join(input, cam))
-        all_files.extend(folder_files[start_frame:end_frame+1])
+    imgs_folder = "./Blender/renders/cameras_D/"
+    output = "./Out/synth_06/voted/"
 
-    output = "./Out/synth_01/voted/"
+    if output:
+        makedirs(output, exist_ok=True)
 
-    chunks = int(len(all_files) / chunk_size)+1
-    start_chunk = int(start_frame / chunk_size)+1
+    cam_ids = tuple(int(x) for x in cam_ids.split(","))
+
+    all_files = get_file_names_with_cam_ids(cam_ids, imgs_folder, cam_first_frame, cam_last_frame)
+
+    if chunk_size == -1:
+        chunk_cnt = 1
+        chunk_size = cam_last_frame+1-cam_first_frame
+    else:
+        chunk_cnt = int((cam_last_frame-cam_first_frame) / chunk_size)+1
+
+    if chunk_cnt > 1:
+        all_files = chunk_cam_file_names(all_files, chunk_cnt, chunk_size)
 
     all_deleted_total, all_changed_total = 0, 0
 
-    print(f'>>> Setup took {(time.time() - t_global):.02f}s')
-
     # print(f'>>> Running ProcessPoolExecutor() with [{workers}] workers <<<')
     # with concurrent.futures.ProcessPoolExecutor(workers) as executor:
-    for c in range(start_chunk, chunks + 1, 1):
-        t_chunk = time.time()
+    #     for _ in range(workers):
+    #         executor.submit(time.sleep, .1)
 
-        with open(markers_chunks_files[c-1]) as f:
-            all_markers = json.load(f)
+    all_frames_cnt = 0
 
-        c_first_frame = (c-1)*chunk_size
-        c_last_frame = min(len(all_files), c*chunk_size)-1
+    for cam_idx in cam_ids:
+        t_cam = time.time()
+        _, cam_chunk_files = folder_contents(chunks_folder, True, files_filter_lambda=lambda x: x.startswith(
+            f'cam_{leading_zeros(cam_idx,3)}') and x.endswith('refined_markers.json'))
 
-        chunk_deleted_total, chunk_changed_total = 0, 0
+        if len(cam_chunk_files) == 0:
+            print(f'\n>>> Skipping cam idx {cam_idx} | No chunk files!')
+            continue
 
-        for frame_idx in range(c_last_frame-c_first_frame):
-            voted, deleted_num, changed_num = process_frame(all_markers[frame_idx], patches, inversed_patches)
+        cam_frames_cnt = 0
+        cam_deleted_cnt = 0
+        cam_changed_cnt = 0
 
-            chunk_deleted_total += deleted_num
-            chunk_changed_total += changed_num
+        for chunk_idx in range(chunk_cnt):
 
-            all_markers[frame_idx] = voted
+            t_chunk = time.time()
 
-        all_deleted_total += chunk_deleted_total
-        all_changed_total += chunk_changed_total
+            chunk_first_frame = (chunk_idx)*chunk_size
+            chunk_last_frame = min(((chunk_idx+1)*chunk_size)-1, cam_last_frame - cam_first_frame)
+            chunk_overall_first_frame = chunk_first_frame + cam_first_frame
+            chunk_overall_last_frame = chunk_last_frame + cam_first_frame
 
-        t_chunk = time.time() - t_chunk
-        print(f"> Chunk [{c}/{chunks}] | Time: {t_chunk:.02f}s (Avg: {t_chunk / len(all_markers):.02f} / frame) | Frames: [{c_first_frame}/{c_last_frame}] | Labels deleted: {chunk_deleted_total} | Labels changed: {chunk_changed_total} | Avg deleted: {(chunk_deleted_total / len(all_markers)):.02f} | Avg changed: {(chunk_changed_total / len(all_markers)):.02f})")
+            print(f'\n>>> Starting chunk [{chunk_idx+1}/{len(cam_chunk_files)}] | Frames: {chunk_size} | Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}] <<<')
 
-        if output:
-            os.makedirs(output, exist_ok=True)
-            fn = os.path.join(output, f'voted_chunk_{utils.leading_zeros(c,4)}_frames_[{c_first_frame}-{c_last_frame}].json')
-            with open(fn, 'w+', 1) as f:
-                json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
-                f.write(json_string)
+            with open(cam_chunk_files[chunk_idx]) as f:
+                all_markers = json.load(f)
+
+            c_files = all_files[cam_idx][chunk_idx]
+
+            cam_frames_cnt += len(c_files)
+
+            chunk_deleted_cnt, chunk_changed_cnt = 0, 0
+
+            print(f'> Setup took {(time.time() - t_chunk):.02f}s')
+
+            for frame_idx in range(len(c_files)):
+                voted, deleted_num, changed_num = process_frame(all_markers[frame_idx], patches, inversed_patches)
+
+                chunk_deleted_cnt += deleted_num
+                chunk_changed_cnt += changed_num
+
+                all_markers[frame_idx] = voted
+
+            cam_deleted_cnt += chunk_deleted_cnt
+            cam_changed_cnt += chunk_changed_cnt
+
+            if output:
+                makedirs(output, exist_ok=True)
+                fn = join(output, f'cam_{leading_zeros(cam_idx,3)}_chunk_{leading_zeros(chunk_idx,3)}_[{chunk_first_frame}-{chunk_last_frame}]_voted.json')
+                with open(fn, 'w+', 1) as f:
+                    json_string = json.dumps(all_markers, separators=(',', ":"))  # Compact JSON structure
+                    f.write(json_string)
+
+            t_chunk = time.time() - t_chunk
+            print(f'> Chunk [{chunk_idx+1}/{chunk_cnt}] | Time: {t_chunk:.02f}s (Avg {(t_chunk / len(c_files)):.02f}s / frame) | Deleted: {chunk_deleted_cnt} (Avg: {(chunk_deleted_cnt/len(c_files)):.02f} / frame) | Changed: {chunk_changed_cnt} (Avg: {(chunk_changed_cnt/len(c_files)):.02f} / frame) | Frames: {len(c_files)} (Chunk range: [{chunk_first_frame}-{chunk_last_frame}])')
+
+        all_frames_cnt += cam_frames_cnt
+        all_deleted_total += cam_deleted_cnt
+        all_changed_total += cam_changed_cnt
+
+        t_cam = time.time() - t_cam
+        print(
+            f'>>> Cam {cam_idx} took {t_cam:.02f}s (Avg: {(t_cam / cam_frames_cnt):.02f}s) | Deleted: {cam_deleted_cnt} (Avg: {(cam_deleted_cnt/cam_frames_cnt):.02f} / frame) | Changed: {cam_changed_cnt} (Avg: {(cam_changed_cnt/cam_frames_cnt):.02f} / frame) | Frames: {cam_frames_cnt} (Range: [{cam_first_frame}-{cam_last_frame}]) <<<\n')
 
     t_global = time.time() - t_global
-    print(f'>>> Processed [{c}/{chunks}] chunks | Time: {t_global:.02f}s (Avg: {t_global / len(all_files):.02f}s) | Frames: {len(all_files)} | Labels deleted: {all_deleted_total} (Avg {(all_deleted_total / len(all_files)):.02f}) | Labels changed: {all_changed_total} (Avg {(all_changed_total / len(all_files)):.02f}) | Cam range: [{start_frame}-{end_frame}] <<<')
+    print(
+        f'>>> Processed cam idx {cam_ids} ({chunk_cnt} chunks / cam) in {t_global:.02f}s (Avg: {(t_global / all_frames_cnt):.02f}s) | Deleted: {all_deleted_total} (Avg: {(all_deleted_total/all_frames_cnt):.02f} / frame) | Changed: {all_changed_total} (Avg: {(all_changed_total/all_frames_cnt):.02f} / frame) | Cam frame range: [{cam_first_frame}-{cam_last_frame}] | Frames: {all_frames_cnt} <<<\n')
 
 
 if __name__ == "__main__":

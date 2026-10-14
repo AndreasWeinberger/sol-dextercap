@@ -2,21 +2,15 @@ from . import utils
 from .post_process import observed_points_per_frame
 
 import numpy as np
-import scipy
 import json
 
 import matplotlib.pyplot as plt
-from matplotlib.figure import figaspect
-import skimage
 
 import cv2
 import time
 import os
-import textwrap
 import glob
-from collections import defaultdict
 from dataclasses import dataclass
-import itertools
 
 import argparse
 
@@ -88,7 +82,6 @@ def parse_marker_positions(marker_info, marker_defs: List[Tuple[Tuple[str, int]]
                 dir_confidence = blk_label['dir_confidence']
                 if dir_confidence*label_confidence < combined_confidence_thr:
                     count += 1
-                    print(f'> Discarded {count} labels')
                     continue
 
                 # check if a label appears twice in the same image
@@ -154,6 +147,8 @@ def parse_marker_positions(marker_info, marker_defs: List[Tuple[Tuple[str, int]]
                     continue
 
                 marker_positions[frame_idx, cam_idx, mk_idx] = mk_pos
+
+    print(f'> Discarded {count} labels')
 
     return marker_positions
 
@@ -476,17 +471,19 @@ def triangulation(marker_positions: np.ndarray, cameras: List[CameraInfo], min_s
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--input', default='', type=str, help='folder containing files for triangulation')
-    parser.add_argument('--camera-ids', default='1,2,3,4,5,6,7,8,9,10,11,12,13', type=str, help='id of cameras, in the fmt of 2,3,4...')
-    parser.add_argument('--label-patches', type=str, required=True, help='label_patches.json - Note: each object will be triangulated separately')
-    parser.add_argument('-o', '--output', type=str, default='')
+    parser.add_argument('-i', '--input', default='./Out/synth_06/voted', type=str, help='folder containing files for triangulation (_voted.json)')
+    parser.add_argument('-e', '--extrinsics', default='./Out/synth_02/calibration/extrinsics', type=str, help='folder containing extrinsic calibration files')
+    parser.add_argument('--camera-ids', default='0,1,2,3,4,5,6,7,8,9,10,11,12', type=str, help='id of cameras, in the fmt of 2,3,4...')
+    parser.add_argument('-r', '--frame-range', type=str, default='(0,199)')
+    parser.add_argument('--label-patches', default='./Out/synth_05/patches/all.json', type=str, help='label_patches.json - Note: each object will be triangulated separately')
+    parser.add_argument('-o', '--output', type=str, default='./Out/synth_06/triangulation')
 
     parser.add_argument('--min-seen-cam', type=int, default=2, help='if a maker cannot be seen by such number of cameras, it will be neglect')
-    parser.add_argument('--marker-reproj-error-thr', type=int, default=6, help='marker error threshold, in px')
-    parser.add_argument('--combined-confidence-thr', type=float, default=0.8, help='Only labels with label_confidence * dir_confidence > combined_confidence_thr are considered')
+    parser.add_argument('--marker-reproj-error-thr', type=int, default=8, help='marker error threshold, in px')
+    parser.add_argument('--combined-confidence-thr', type=float, default=0.0, help='Only labels with label_confidence * dir_confidence > combined_confidence_thr are considered')
 
     parser.add_argument('--use-ransac', default=0, action='store_true')
-    parser.add_argument('--ransac-inliner-thr', type=int, default=10, help='inliner threshold, in px')
+    parser.add_argument('--ransac-inliner-thr', type=int, default=6, help='inliner threshold, in px')
 
     parser.add_argument('--show-blocks', type=int, default=1)
     parser.add_argument('--show-2d-plot', type=int,  default=0)
@@ -496,23 +493,29 @@ def main():
 
     args = parser.parse_args()
 
-    camera_names = os.listdir(args.input)
-    camera_folders = [os.path.join(args.input, f) for f in camera_names]
-
     camera_ids = np.array(list(map(int, args.camera_ids.strip('()"\',').split(','))))
+    frame_range = np.array(list(map(int, args.frame_range.strip('()"\',').split(','))))
     print(f'> Camera IDs: {camera_ids}')
 
     marker_defs, blocks, patches = utils.load_label_patches(args.label_patches)
     patch_name = os.path.basename(args.label_patches).split('.')[0]
 
     # marker positions
-    marker_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_voted.json') for cam_i in camera_ids]
-    marker_info = load_marker_files(marker_files)
+    marker_info = [[] for _ in camera_ids]
+    marker_files = [f for f in os.listdir(args.input)]
+    for cam_idx in camera_ids:
+        cam_marker_chunks_files = [os.path.join(args.input, f) for f in list(filter(lambda x: x.startswith(f'cam_{utils.leading_zeros(cam_idx,3)}'), marker_files))]
+        for f in cam_marker_chunks_files:
+            marker_info[cam_idx].extend(load_marker_files([f])[0])
+        marker_info[cam_idx] = marker_info[cam_idx][frame_range[0]:frame_range[1]+1]
+
+    # marker_info = load_marker_files(marker_files)
     # print(marker_info)
     marker_positions = parse_marker_positions(marker_info, marker_defs, combined_confidence_thr=args.combined_confidence_thr)
 
     # camera parameters
-    cam_param_files = [os.path.join(camera_folders[cam_i-1], f'{camera_names[cam_i-1]}_extrinsics.npz') for cam_i in camera_ids]
+    cam_param_files = sorted(os.listdir(args.extrinsics))
+    cam_param_files = [os.path.join(args.extrinsics, cam_param_files[cam_idx]) for cam_idx in camera_ids]
     cameras = load_cam_calib_info_np(cam_param_files)
 
     # now try triangulation
@@ -539,6 +542,7 @@ def main():
     print(f'> Shape of markers_3d_positions: {markers_3d_positions.shape}')
     print(f'> Observed points per frame - Avg: {avg:.02f} Std: {std:.02f} Min: {min} Max: {max}')
 
+    os.makedirs(args.output, exist_ok=True)
     fn = os.path.join(args.output, f'{patch_name}_markers_3d_positions.npy')
     np.save(fn, markers_3d_positions)
 

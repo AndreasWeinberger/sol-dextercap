@@ -1,0 +1,9 @@
+import os, json
+
+fn = 'P:/Projects/Sol/Prototypes/sol-dextercap/Out/synth_01/triangulation'
+
+with open(fn) as f:
+    markers = json.load(f)
+    
+for m in markers:
+    print(m)

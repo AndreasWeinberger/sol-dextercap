@@ -2,35 +2,33 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from ignite.engine import Engine, Events, create_supervised_trainer, create_supervised_evaluator
-from ignite.metrics import Accuracy, Loss, MeanAbsoluteError
+from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
+from ignite.metrics import Loss
 from ignite.handlers import ModelCheckpoint, Checkpoint
 from ignite.contrib.handlers import TensorboardLogger, global_step_from_engine
 
-from torcheval.metrics.functional import binary_f1_score
+from torcheval.metrics.functional import binary_f1_score, binary_precision, binary_recall
 
 from .models import EdgeNet
 from .datasets import EdgeDataset
 
-import numpy as np
 import os
-
-from typing import Tuple
 
 import argparse
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
-    torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
-    torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
+    # torch.autograd.set_detect_anomaly(False) # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=checkpointing%20and%20recomputation.-,Disable%20debugging%20APIs,-%23
+    # torch.backends.cudnn.benchmark = True # https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide.html#enable-cudnn-auto-tuner:~:text=might%20not%20compile.-,Enable%20cuDNN%20auto%2Dtuner,-%23
     
     # args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--labels', default=None, type=str, required=True, help='Path to the labels.json file containing "image" fields and annotated data')
-    parser.add_argument('--out', default='./ckpts/0001/', type=str)
-    parser.add_argument('--lr', default=0.001, type=float, required=True)
-    parser.add_argument('--batch-size', default=1024, type=int, required=True)
+    parser.add_argument('--labels', default='./Data/synth_01/dataset/train_D/labels.json', type=str, help='Path to the labels.json file containing "image" fields and annotated data')
+    parser.add_argument('--out', default='./ckpts/0007/', type=str)
+    parser.add_argument('--logsubdir', default='/0007/edge', type=str)
+    parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--batch-size', default=1024, type=int)
     parser.add_argument('--augment', default=True, type=bool)
     parser.add_argument('--max-epochs', default=400, type=int)
     parser.add_argument('--num-workers', default=8, type=int)
@@ -47,7 +45,7 @@ if __name__ == "__main__":
 
     val_loader = DataLoader(
         EdgeDataset(args.dataset_folder, args.labels, size=1280, train=False, augment_image=False),
-        batch_size=args.batch_size, shuffle=False, num_workers=int(args.num_workers / 2), persistent_workers=args.num_workers > 0, pin_memory=True
+        batch_size=args.batch_size, shuffle=False, num_workers=min(2,int(args.num_workers / 2)), persistent_workers=args.num_workers > 0, pin_memory=True
     )
 
     model = EdgeNet().to(device)
@@ -66,6 +64,22 @@ if __name__ == "__main__":
 
         return (pred == targ).sum() / pred.numel()
 
+    def precision_func(input: torch.Tensor, target: torch.Tensor):
+        pred = input > 0.0
+        targ = target > 0.5
+
+        f1 = binary_precision(pred.view(-1), targ.view(-1))
+
+        return f1
+
+    def recall_func(input: torch.Tensor, target: torch.Tensor):
+        pred = input > 0.0
+        targ = target > 0.5
+
+        f1 = binary_recall(pred.view(-1), targ.view(-1))
+
+        return f1
+
     def f1_score_func(input: torch.Tensor, target: torch.Tensor):
         pred = input > 0.0
         targ = target > 0.5
@@ -81,6 +95,8 @@ if __name__ == "__main__":
 
     val_metrics = {
         "accuracy": Loss(accuracy_func),
+        "precision": Loss(precision_func),
+        "recall": Loss(recall_func),
         "f1_score": Loss(f1_score_func),
         "loss": Loss(nn.functional.binary_cross_entropy_with_logits)
     }
@@ -89,7 +105,7 @@ if __name__ == "__main__":
     val_evaluator = create_supervised_evaluator(model, metrics=val_metrics, device=device)
 
     log_interval = 1
-    tb_logger = TensorboardLogger(log_dir="logger/edge")
+    tb_logger = TensorboardLogger(log_dir=f"logger/{args.logsubdir}")
 
     @trainer.on(Events.ITERATION_COMPLETED(every=log_interval))
     def log_training_loss(engine):
@@ -107,12 +123,12 @@ if __name__ == "__main__":
     def log_validation_results(trainer):
         val_evaluator.run(val_loader)
         metrics = val_evaluator.state.metrics
-        print(f"Validation Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f} Avg f1_score: {metrics['f1_score']:.2f}")
+        print(f"Validation Results - Epoch[{trainer.state.epoch}] Avg accuracy: {metrics['accuracy']:.2f} Avg loss: {metrics['loss']:.2f} Avg f1_score: {metrics['f1_score']:.2f} Avg precision: {metrics['precision']:.2f} Avg recall: {metrics['recall']:.2f}")
 
         tb_logger.writer.flush()
 
     def score_function(engine):
-        return engine.state.metrics["accuracy"]
+        return engine.state.metrics["f1_score"]
 
     model_checkpoint = ModelCheckpoint(
         os.path.join(args.out, 'edge'),
@@ -127,7 +143,7 @@ if __name__ == "__main__":
         n_saved=3,
         filename_prefix=f'best_lr_{args.lr}_bs_{args.batch_size}',
         score_function=score_function,
-        score_name="accuracy",
+        score_name="f1_score",
         global_step_transform=global_step_from_engine(trainer),
         require_empty=False
     )

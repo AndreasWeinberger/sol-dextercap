@@ -407,7 +407,7 @@ def main():
     parser.add_argument(
         "--use_right_hand",
         type=bool,
-        default=True,
+        default=False,
         help="Whether to use the right hand. False for left hand",
     )
     parser.add_argument(

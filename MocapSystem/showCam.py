@@ -5,6 +5,7 @@ import pyvistaqt as pvqt
 
 from numpy.typing import ArrayLike
 import time
+from VideoProcess.utils import leading_zeros
 
 
 def addCamera(plotter: pv.Plotter, cam_name: str, cam_t: ArrayLike, cam_R: ArrayLike, scale=0.04):
@@ -47,7 +48,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--input', type=str, required=True)
-    parser.add_argument('-c', '--camera-ids', type=str, default='1,2,3,4,5,6,7,8,9,10,11,12,13')
+    parser.add_argument('-c', '--camera-ids', type=str, default='0,1,2,3,4,5,6,7,8,9,10,11,12')
     parser.add_argument('-p', '--points', type=str, default="./Out/synth_01/triangulation/hand_patches_markers_3d_positions.npy")
 
     args = parser.parse_args()
@@ -68,14 +69,11 @@ def main():
     camera_ids = np.array(list(map(int, args.camera_ids.strip('()"\',').split(','))))
     print(f'> Camera IDs: {camera_ids}')
 
-    camera_names = os.listdir(args.input)
+    extrinsics_files = tuple(os.path.join(args.input, f) for f in os.listdir(args.input))
 
-    for cam_id, cam_name in enumerate(camera_names):
-        if not cam_id+1 in camera_ids:
-            continue
-
-        with np.load(os.path.join(args.input, cam_name, f'{cam_name}_extrinsics.npz')) as f:
-            addCamera(plotter, cam_name, f["tvecs"], f["rmats"])
+    for cam_id in camera_ids:
+        with np.load(extrinsics_files[cam_id]) as f:
+            addCamera(plotter, f'cam_{leading_zeros(cam_id,3)}', f["tvecs"], f["rmats"])
 
     plotter.add_mesh(pv.Arrow(direction=(1, 0, 0), scale=0.1), color='r')
     plotter.add_mesh(pv.Arrow(direction=(0, 1, 0), scale=0.1), color='g')

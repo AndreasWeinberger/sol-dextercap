@@ -2,13 +2,13 @@ import torch
 from torch import nn
 import skimage
 import numpy as np
-from models import UNet, EdgeNet
+from .models import UNet, EdgeNet
 import time
 import cv2
 import scipy
-from datasets import EdgeDataset
+from .datasets import EdgeDataset
 import itertools
-import utils
+from . import utils
 from os.path import join
 from os import makedirs, listdir, rename, remove
 import gc
@@ -387,11 +387,11 @@ def process_block_candidates(frame_idx, markers, edge_pts, edge_pred, edge_confi
     return frame_idx, checked_markers, block_candidates
 
 
-def export(data, output: str, prefix: str, chunk_first_frame: int, chunk_last_frame: int, chunk_overall_first_frame: int, chunk_overall_last_frame: int, update_output: bool):
-    fn = join(output, f'{prefix}_frames_[{chunk_first_frame}-{chunk_last_frame}]_markers.json')
+def export(data, output: str, prefix: str, chunk_first_frame: int, chunk_last_frame: int, chunk_overall_first_frame: int, chunk_overall_last_frame: int, update_output: bool, use_overall_frame_range: bool):
+    fn = join(output, f'{prefix}_frames_[{chunk_overall_first_frame if use_overall_frame_range else chunk_first_frame}-{chunk_overall_last_frame if use_overall_frame_range else chunk_last_frame}]_markers.json')
 
     if update_output:
-        update_files = [join(output,f) for f in listdir(output) if f.startswith(prefix)]
+        update_files = [join(output, f) for f in listdir(output) if f.startswith(prefix)]
         if len(update_files) > 0:
             old_fn = update_files[0]
             with open(old_fn, 'r') as f:
@@ -407,12 +407,13 @@ def export(data, output: str, prefix: str, chunk_first_frame: int, chunk_last_fr
                 json_string = json.dumps(update_data, separators=(',', ":"))  # Compact JSON structure
                 f.write(json_string)
 
-            fn = join(output, f'{prefix}_frames_[{chunk_first_frame}-{chunk_first_frame+len(update_data)-1}]_markers.json')
+            fn = join(
+                output, f'{prefix}_frames_[{chunk_overall_first_frame if use_overall_frame_range else chunk_first_frame}-{chunk_overall_last_frame if use_overall_frame_range else chunk_first_frame+len(update_data)-1}]_markers.json')
             if old_fn != fn:
                 rename(old_fn, fn)
 
             return
-    delete_files = [join(output,f) for f in listdir(output) if f.startswith(prefix)]
+    delete_files = [join(output, f) for f in listdir(output) if f.startswith(prefix)]
     for f in delete_files:
         remove(f)
 
@@ -433,7 +434,7 @@ def main():
     torch.set_float32_matmul_precision('medium')
 
     conv_model: nn.Module = UNet(output_channel=2).to(device)
-    conv_model.load_state_dict(torch.load("./ckpts/0002/conv/best_lr_0.001_bs_128_model_25_acc=0.7881.pt", weights_only=True, map_location=device))
+    conv_model.load_state_dict(torch.load("./ckpts/0007/conv/best_lr_0.001_bs_128_model_32_acc=0.7798.pt", weights_only=True, map_location=device))
     conv_model.to(dtype=torch.bfloat16)
 
     conv_model = torch.compile(
@@ -445,7 +446,7 @@ def main():
     conv_model.eval()
 
     edge_model: nn.Module = EdgeNet().to(device)
-    edge_model.load_state_dict(torch.load("./ckpts/0002/edge/best_lr_0.001_bs_1024_model_20_accuracy=0.9836.pt", weights_only=True, map_location=device))
+    edge_model.load_state_dict(torch.load("./ckpts/0007/edge/best_lr_0.001_bs_1024_model_6_f1_score=0.9808.pt", weights_only=True, map_location=device))
     edge_model.to(dtype=torch.float32)
     edge_model.eval()
 
@@ -457,15 +458,14 @@ def main():
     )
 
     # Tuple of ids e.g.: (0,1,2,3,4,5,6) or (0,) for only cam_idx 0
-    camera_ids = (0,)
-    # when chunks_from_camera_ids is True, this counts for each camera
+    cam_ids = "0,1,2,3,4,5,6,7,8,9,10,11,12"
     cam_first_frame = 0
-    # when chunks_from_camera_ids is True, this counts for each camera
-    cam_last_frame = 19
+    cam_last_frame = 199
     # Update output file
     update_output = False
+    use_overall_frame_range = False
     # -1 to create only one chunk with all frames
-    chunk_size = 10
+    chunk_size = 64
     # for the ProcessPoolExecutor(), betw. 6-12 is recommended
     workers = 8
 
@@ -480,18 +480,15 @@ def main():
     marker_confidence_thr = 0.6
     edge_confidence_thr = 0.6
 
-    input = "./Blender/renders/cameras/"
-    output = "./Out/synth_02/markers/"
+    imgs_folder = "./Blender/renders/cameras_D/"
+    output = "./Out/synth_06/markers/"
 
     if output:
         makedirs(output, exist_ok=True)
 
-    cameras = listdir(input)
+    cam_ids = tuple(int(x) for x in cam_ids.split(","))
 
-    all_files = [[] for _ in range(max(camera_ids)+1)]
-    for idx in camera_ids:
-        _, folder_files = utils.folder_contents(join(input, cameras[idx]))
-        all_files[idx].append(folder_files[cam_first_frame:cam_last_frame+1])
+    all_files = utils.get_file_names_with_cam_ids(cam_ids, imgs_folder, cam_first_frame, cam_last_frame)
 
     if chunk_size == -1:
         chunk_cnt = 1
@@ -500,24 +497,15 @@ def main():
         chunk_cnt = int((cam_last_frame-cam_first_frame) / chunk_size)+1
 
     if chunk_cnt > 1:
-        for chunk_idx in range(len(all_files)):
-            if len(all_files[chunk_idx]) == 0:
-                continue
-
-            files = all_files[chunk_idx][0].copy()
-            all_files[chunk_idx] = []
-            for j in range(chunk_cnt):
-                start = (j)*chunk_size
-                end = min(len(files), (j+1)*chunk_size)
-                all_files[chunk_idx].append(files[start:end])
+        all_files = utils.chunk_cam_file_names(all_files, chunk_cnt, chunk_size)
 
     with concurrent.futures.ProcessPoolExecutor(workers) as executor:
         print(f'>>> Running ProcessPoolExecutor() with {workers} workers <<<')
         for _ in range(workers):
             executor.submit(time.sleep, .1)
-        for cam_idx in camera_ids:
+        for cam_idx in cam_ids:
 
-            print(f'>>> Starting camera idx {cam_idx} | Chunks: {len(all_files[cam_idx])} | Range: [{cam_first_frame}-{cam_last_frame}] <<<')
+            print(f'>>> Starting cam idx {cam_idx} | Chunks: {len(all_files[cam_idx])} | Range: [{cam_first_frame}-{cam_last_frame}] <<<')
             t_cam = time.time()
 
             cam_frames_count = sum([len(all_files[cam_idx][chunk_idx]) for chunk_idx in range(len(all_files[cam_idx]))])
@@ -527,11 +515,11 @@ def main():
                 t_chunk = time.time()
 
                 chunk_first_frame = (chunk_idx)*chunk_size
-                chunk_last_frame = min(((chunk_idx+1)*chunk_size)-1,cam_frames_count-1)
+                chunk_last_frame = min(((chunk_idx+1)*chunk_size)-1, cam_frames_count-1)
                 chunk_overall_first_frame = chunk_first_frame + cam_first_frame
                 chunk_overall_last_frame = chunk_last_frame + cam_first_frame
 
-                print(f'>>> Starting chunk idx [{chunk_idx}/{chunk_cnt-1}] | Frames: {chunk_overall_last_frame+1-chunk_overall_first_frame} | Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}] <<<')
+                print(f'>>> Starting chunk [{chunk_idx+1}/{chunk_cnt}] | Frames: {chunk_overall_last_frame+1-chunk_overall_first_frame} | Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}] <<<')
 
                 frames = np.ndarray([len(all_files[cam_idx][chunk_idx]), 2048, 2448], dtype=np.float32)
 
@@ -651,24 +639,33 @@ def main():
                             "blocks": chunk_blocks[frame_idx],
                         })
 
-                    prefix = f"camera_{utils.leading_zeros(cam_idx,3)}_chunk_{utils.leading_zeros(chunk_idx,3)}"
-                    export(j, output, prefix, chunk_first_frame, chunk_last_frame, chunk_overall_first_frame, chunk_overall_last_frame, update_output)
+                    prefix = f"cam_{utils.leading_zeros(cam_idx,3)}_chunk_{utils.leading_zeros(chunk_idx,3)}"
+                    export(j, output, prefix, chunk_first_frame, chunk_last_frame, chunk_overall_first_frame, chunk_overall_last_frame, update_output, use_overall_frame_range)
 
                 t_chunk = time.time() - t_chunk
-                print(f'>>> Chunk idx [{chunk_idx}/{chunk_cnt-1}]" took {t_chunk:.02f}s (Avg: {(t_chunk / (chunk_overall_last_frame+1-chunk_overall_first_frame)):.02f}s) | Frames: {chunk_overall_last_frame+1-chunk_overall_first_frame} (Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}]) <<<\n')
+                print(f'>>> Chunk idx [{chunk_idx+1}/{chunk_cnt}]" took {t_chunk:.02f}s (Avg: {(t_chunk / (chunk_overall_last_frame+1-chunk_overall_first_frame)):.02f}s) | Frames: {chunk_overall_last_frame+1-chunk_overall_first_frame} (Range: [{chunk_overall_first_frame}-{chunk_overall_last_frame}]) <<<\n')
 
             t_cam = time.time() - t_cam
-            print(f'>>> Camera idx {cam_idx} took {t_cam:.02f}s (Avg: {(t_cam / cam_frames_count):.02f}s) | Frames: {cam_frames_count} (Range: [{cam_first_frame}-{cam_last_frame}]) <<<\n')
+            print(f'>>> Cam idx {cam_idx} took {t_cam:.02f}s (Avg: {(t_cam / cam_frames_count):.02f}s) | Frames: {cam_frames_count} (Range: [{cam_first_frame}-{cam_last_frame}]) <<<\n')
 
     if not update_output:
-        delete_files = [join(output,f) for file_idx, f in enumerate(listdir(output)) if f.startswith(f"camera_{utils.leading_zeros(cam_idx,3)}") and file_idx > chunk_cnt-1]
-        for f in delete_files:
-            remove(f)
+        out = listdir(output)
+        for cam_id in cam_ids:
+            out_c = list(filter(lambda x: x.startswith(f"cam_{utils.leading_zeros(cam_id,3)}"), out))
 
-    all_frames_count = sum([len(all_files[cam_idx][chunk_idx]) for chunk_idx in range(len(all_files[cam_idx])) for cam_idx in range(len(all_files))])
+            delete_files = [join(output, f) for file_idx, f in enumerate(out_c) if file_idx > chunk_cnt-1]
+            for f in delete_files:
+                remove(f)
+
+    all_frames_count = 0
+    for cam_idx in range(len(all_files)):
+        for chunk_idx in range(len(all_files[cam_idx])):
+            if len(all_files[cam_idx]) > 0:
+                all_frames_count += len(all_files[cam_idx][chunk_idx])
+
     t_global = time.time() - t_global
     print(
-        f'>>> Processed camera idx {camera_ids} ({chunk_cnt} chunks / cam) in {t_global:.02f}s (Avg: {(t_global / all_frames_count):.02f}s) | Cam frame range: [{cam_first_frame}-{cam_last_frame}] | Frames: {all_frames_count} <<<\n')
+        f'>>> Processed cam idx {cam_ids} ({chunk_cnt} chunks / cam) in {t_global:.02f}s (Avg: {(t_global / all_frames_count):.02f}s) | Cam frame range: [{cam_first_frame}-{cam_last_frame}] | Frames: {all_frames_count} <<<\n')
 
 
 if __name__ == '__main__':

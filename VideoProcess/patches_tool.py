@@ -250,13 +250,17 @@ class PatchWidget(QWidget):
 
         return {k: v for k, v in all.items() if len(v) > 1}
 
-    def find_block_label(self, label: str):
+    def find_block_label(self, label: str, exact_match: bool = False):
         found: dict[str, list[int]] = {}
         for p in self.patches:
             for row_idx, row in enumerate(p.blocks):
                 for col_idx, b in enumerate(row):
-                    if b.label == label:
-                        found[p.name] = [row_idx, col_idx]
+                    if exact_match:
+                        if b.label == label:
+                            found[p.name] = [row_idx, col_idx]
+                    else:
+                        if label in b.label:
+                            found[p.name] = [row_idx, col_idx]
         return found
 
 
@@ -513,12 +517,15 @@ class Window(QMainWindow):
         # View Menu
         menu = self.menuBar().addMenu("&View")
 
+        def find_block_label_exact():
+            find_block_label(True)
+
         # Find block label
-        def find_block_label():
+        def find_block_label(exact_match: bool = False):
             val, ret1 = QInputDialog.getText(self, 'Find block label', 'Label (max. 2 chars)')
             val = val.strip().upper()
             if ret1:
-                found_labels = self.main_widget.find_block_label(val)
+                found_labels = self.main_widget.find_block_label(val, exact_match)
                 if len(found_labels) > 0:
                     found_str = ''
                     for f in found_labels:
@@ -529,8 +536,12 @@ class Window(QMainWindow):
                     QMessageBox.information(self, f'Not Found', f'Could not find label "{val}" in any patch!',
                                             QMessageBox.StandardButton.Ok, QMessageBox.StandardButton.Ok)
 
-        self.ui_scale_action = menu.addAction('Find Block Label')
-        self.ui_scale_action.triggered.connect(find_block_label)
+        self.find_label = menu.addAction('Find Label')
+        self.find_label.triggered.connect(find_block_label)
+        self.find_label.setShortcuts({'CTRL+F'})
+        self.find_label_exact = menu.addAction('Find Label (exact match)')
+        self.find_label_exact.triggered.connect(find_block_label_exact)
+        self.find_label_exact.setShortcuts({'CTRL+G'})
 
         # UI scale
         def set_ui_scale():
@@ -647,7 +658,7 @@ class Window(QMainWindow):
 
     def close(self):
 
-        while self.patches_file == None or self.unsaved_changes:
+        while self.unsaved_changes:
             btn = QMessageBox.warning(self, 'Save Changes', 'Do you wish to save the changes before exiting?',
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
 
